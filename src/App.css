@@ -1,0 +1,291 @@
+/* App-specific styles */
+.app {
+  @apply min-h-screen;
+}
+
+/* Sidebar transitions */
+.sidebar-enter {
+  @apply transform translate-x-0;
+}
+
+.sidebar-leave {
+  @apply transform -translate-x-full;
+}
+
+/* Page transitions */
+.page-enter {
+  @apply animate-in;
+}
+
+.page-leave {
+  @apply animate-out;
+}
+
+/* Focus styles for accessibility */
+*:focus-visible {
+  @apply outline-none ring-2 ring-primary-500 ring-offset-2 ring-offset-surface-950;
+}
+
+/* Custom checkbox */
+.custom-checkbox {
+  @apply relative flex items-center h-5 w-5 border border-surface-600 rounded-sm bg-surface-800 text-primary-500 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-surface-950;
+}
+
+.custom-checkbox:checked {
+  @apply border-primary-500 bg-primary-500;
+}
+
+.custom-checkbox:disabled {
+  @apply opacity-50 cursor-not-allowed;
+}
+
+/* Custom switch */
+.custom-switch {
+  @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-surface-950;
+}
+
+.custom-switch input {
+  @apply sr-only;
+}
+
+.custom-switch .switch-thumb {
+  @apply h-4 w-4 transform rounded-full bg-white shadow-lg transition-transform duration-200;
+}
+
+.custom-switch input:checked + .switch-thumb {
+  @apply translate-x-5;
+}
+
+.custom-switch input:checked ~ .switch-track {
+  @apply bg-primary-500;
+}
+
+.custom-switch .switch-track {
+  @apply absolute inset-0 rounded-full bg-surface-700 transition-colors duration-200;
+}
+
+/* Dropdown menu */
+.dropdown-menu {
+  @apply absolute z-50 mt-1 min-w-[160px] rounded-lg bg-surface-900 border border-surface-700 shadow-lg py-1;
+}
+
+.dropdown-item {
+  @apply flex items-center gap-2 px-3 py-2 text-sm text-surface-300 hover:bg-surface-800 hover:text-surface-50 transition-colors;
+}
+
+.dropdown-item-danger {
+  @apply text-red-400 hover:bg-red-500/10;
+}
+
+.dropdown-divider {
+  @apply h-px bg-surface-700 my-1;
+}
+
+/* Tooltip */
+.tooltip {
+  @apply absolute z-50 px-2 py-1 text-xs bg-surface-900 text-surface-100 rounded shadow-lg border border-surface-700 opacity-0 invisible transition-all duration-150 whitespace-nowrap;
+}
+
+.tooltip-visible {
+  @apply opacity-100 visible;
+}
+
+/* Progress bar */
+.progress-bar {
+  @apply h-2 bg-surface-700 rounded-full overflow-hidden;
+}
+
+.progress-fill {
+  @apply h-full bg-primary-500 rounded-full transition-all duration-500 ease-out;
+}
+
+/* Stat card */
+.stat-card {
+  @apply card p-4 hover:shadow-[0_0_20px_rgba(255,107,53,0.1)] transition-shadow duration-300;
+}
+
+.stat-value {
+  @apply text-3xl font-bold font-mono tabular-nums;
+}
+
+.stat-label {
+  @apply text-sm text-surface-400 mt-1;
+}
+
+/* Platform card */
+.platform-card {
+  @apply card p-4 flex items-center justify-between gap-4;
+}
+
+.platform-info {
+  @apply flex items-center gap-3 min-w-0 flex-1;
+}
+
+.platform-avatar {
+  @apply w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold text-sm flex-shrink-0;
+}
+
+.platform-name {
+  @apply font-medium text-surface-100 truncate;
+}
+
+.platform-platform {
+  @apply text-sm text-surface-500;
+}
+
+.platform-status {
+  @apply flex items-center gap-2;
+}
+
+/* Delay control */
+.delay-control {
+  @apply flex items-center gap-4;
+}
+
+.delay-display {
+  @apply flex items-baseline gap-1;
+}
+
+.delay-value {
+  @apply text-4xl font-bold font-mono tabular-nums text-surface-50;
+}
+
+.delay-unit {
+  @apply text-lg text-surface-400;
+}
+
+/* Buffer bar */
+.buffer-container {
+  @apply w-full h-3 bg-surface-700 rounded-full overflow-hidden relative;
+}
+
+.buffer-fill {
+  @apply h-full bg-gradient-to-r from-primary-400 to-primary-600 rounded-full transition-all duration-500 ease-out;
+}
+
+.buffer-fill.buffering {
+  @apply bg-gradient-to-r from-orange-400 to-orange-600;
+}
+
+/* Settings section */
+.settings-section {
+  @apply space-y-6;
+}
+
+.settings-group {
+  @apply space-y-4;
+}
+
+.settings-group-title {
+  @apply text-lg font-semibold text-surface-200 flex items-center gap-2;
+}
+
+.settings-group-title::before {
+  content: '';
+  @apply w-1 h-6 bg-primary-500 rounded-full;
+}
+
+/* Modal */
+.modal-overlay {
+  @apply fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4;
+}
+
+.modal-content {
+  @apply card w-full max-w-2xl max-h-[90vh] overflow-y-auto;
+}
+
+.modal-header {
+  @apply flex items-center justify-between p-4 border-b border-surface-800;
+}
+
+.modal-title {
+  @apply text-lg font-semibold text-surface-50;
+}
+
+.modal-body {
+  @apply p-4 space-y-4;
+}
+
+.modal-footer {
+  @apply flex items-center justify-end gap-3 p-4 border-t border-surface-800;
+}
+
+/* Empty state */
+.empty-state {
+  @apply flex flex-col items-center justify-center py-12 px-4 text-center;
+}
+
+.empty-state-icon {
+  @apply text-surface-600 mb-4;
+}
+
+.empty-state-title {
+  @apply text-lg font-medium text-surface-300 mb-1;
+}
+
+.empty-state-description {
+  @apply text-surface-500 text-sm max-w-xs;
+}
+
+/* Loading skeleton */
+.skeleton {
+  @apply bg-surface-800 animate-pulse rounded;
+}
+
+.skeleton-text {
+  @apply h-4 w-full skeleton;
+}
+
+.skeleton-title {
+  @apply h-6 w-3/4 skeleton;
+}
+
+.skeleton-card {
+  @apply h-32 w-full skeleton rounded-xl;
+}
+
+/* Animations */
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes slideOutRight {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 0.3s ease-out;
+}
+
+.animate-slide-out-right {
+  animation: slideOutRight 0.3s ease-in;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .sidebar {
+    @apply fixed inset-y-0 left-0 z-40 transform transition-transform duration-300 ease-in-out;
+  }
+
+  .sidebar-open {
+    @apply translate-x-0;
+  }
+
+  .sidebar-closed {
+    @apply -translate-x-full;
+  }
+}

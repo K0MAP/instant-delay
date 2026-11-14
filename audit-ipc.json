@@ -1,0 +1,168 @@
+{
+  "audit_timestamp": "2026-11-14",
+  "files_audited": [
+    "src-tauri/src/ipc/commands.rs",
+    "src-tauri/src/hotkeys/mod.rs"
+  ],
+  "findings": [
+    {
+      "severity": "HIGH",
+      "command": "update_settings",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 380,
+      "issue": "Mass assignment vulnerability - accepts entire Settings struct without validation",
+      "exploit": "Attacker can send crafted Settings object with malicious values: bind_address set to '0.0.0.0' to expose server externally, port set to privileged port (<1024), max_delay_sec set to extremely high value causing memory exhaustion, buffer_max_memory_mb set to huge value causing OOM, web_ui_auth_token overwritten to bypass auth, overlay_port/web_ui_port/streamdeck_port set to conflict with system services",
+      "fix": "Implement allowlist validation - only accept specific settings fields that are safe to update. Validate each field: bind_address must be valid IP, ports in valid range (1024-65535), max_delay_sec <= 3600, buffer_max_memory_mb <= 2048, delay_step_sec >= 1. Reject unknown fields."
+    },
+    {
+      "severity": "HIGH",
+      "command": "add_platform_output",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 262,
+      "issue": "Insufficient URL validation - allows arbitrary RTMP URLs including internal services",
+      "exploit": "Attacker can add platform output pointing to internal services (rtmp://127.0.0.1:1935, rtmp://localhost:8080, rtmp://169.254.169.254 for cloud metadata). Stream key concatenation at line 274 allows injection if stream_key contains '@' or query params. No SSRF protection.",
+      "fix": "Validate URL scheme is rtmp:// or rtmps:// only. Block private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16). Validate stream_key format per platform. Use allowlist of known platforms."
+    },
+    {
+      "severity": "HIGH",
+      "command": "update_platform_output",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 324,
+      "issue": "Same URL validation issues as add_platform_output - no validation on update",
+      "exploit": "Attacker can modify existing platform output to point to internal services after initial validation",
+      "fix": "Apply same URL validation as add_platform_output"
+    },
+    {
+      "severity": "MEDIUM",
+      "command": "test_platform_connection",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 362,
+      "issue": "URL validation only checks prefix - vulnerable to SSRF via valid-looking RTMP URLs",
+      "exploit": "Attacker can test connection to internal services (rtmp://127.0.0.1:1935, rtmp://internal-service:1935) to probe network",
+      "fix": "Implement full URL validation with private IP blocking. Consider using allowlist of known platform domains."
+    },
+    {
+      "severity": "MEDIUM",
+      "command": "start_rtmp_server",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 22,
+      "issue": "No authorization check - any frontend can start server binding to configured address/port",
+      "exploit": "Malicious frontend or compromised renderer could start server on 0.0.0.0:1935 exposing RTMP to network. Settings bind_address loaded without validation at line 30-33.",
+      "fix": "Validate bind_address is not 0.0.0.0 unless explicitly allowed by admin setting. Require user confirmation for binding to non-loopback addresses. Add rate limiting on start/stop."
+    },
+    {
+      "severity": "MEDIUM",
+      "command": "set_delay",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 134,
+      "issue": "Input validation only clamps to 600 - no minimum validation, no rate limiting",
+      "exploit": "Rapid calls could cause excessive CPU from frequent buffer reconfiguration. Value of 0 might cause issues in buffer logic.",
+      "fix": "Add minimum delay validation (>= 1 second). Implement rate limiting (e.g., max 10 calls/second). Validate against settings.max_delay_sec not hardcoded 600."
+    },
+    {
+      "severity": "MEDIUM",
+      "command": "increase_delay / decrease_delay",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 196,
+      "issue": "Race condition - reads settings, computes new delay, saves settings - non-atomic",
+      "exploit": "Concurrent calls could cause lost updates or incorrect delay values. Settings loaded twice (lines 201, 208) - TOCTOU.",
+      "fix": "Use atomic operations or lock settings during read-modify-write. Load settings once, compute, save."
+    },
+    {
+      "severity": "MEDIUM",
+      "command": "register_hotkeys / update_hotkey_config",
+      "file": "src-tauri/src/hotkeys/mod.rs",
+      "line": 252,
+      "issue": "Hotkey string parsing accepts arbitrary strings - potential for injection in accelerator format",
+      "exploit": "Malicious hotkey string like 'Control+Shift+D; malicious_command' could cause issues if passed to system. parse_hotkey at line 141 doesn't validate final accelerator format strictly.",
+      "fix": "Validate hotkey string format strictly - only allow known modifiers (Control, Shift, Alt, Meta) and known keys. Reject any string with semicolons, spaces, or unexpected characters."
+    },
+    {
+      "severity": "LOW",
+      "command": "execute_hotkey",
+      "file": "src-tauri/src/hotkeys/mod.rs",
+      "line": 299,
+      "issue": "No validation of handler parameter - could execute arbitrary action if handler name guessed",
+      "exploit": "Attacker could brute-force handler names to trigger actions. Handler names derived from accelerator format at line 77.",
+      "fix": "Validate handler name against registered shortcuts. Use opaque tokens instead of predictable names."
+    },
+    {
+      "severity": "LOW",
+      "command": "get_system_info / check_obs_running",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 444,
+      "issue": "Information leakage - exposes system details (OS version, memory, CPU, running processes)",
+      "exploit": "Malicious frontend can fingerprint system for targeted attacks. OBS version detection uses Windows API (GetFileVersionInfo) which could be exploited via malicious executable names.",
+      "fix": "Limit system info to minimum needed. Consider removing OBS version detection or sanitizing executable path before passing to Windows API."
+    },
+    {
+      "severity": "LOW",
+      "command": "regenerate_overlay",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 419,
+      "issue": "No validation of overlay_theme from settings - theme values used directly in web server",
+      "exploit": "If theme values (colors, fonts) are reflected in overlay HTML without sanitization, could lead to XSS in overlay page.",
+      "fix": "Validate theme values: colors must be valid CSS color formats, font_family must be safe list, font_size reasonable bounds."
+    },
+    {
+      "severity": "LOW",
+      "command": "start_rtmp_server / stop_rtmp_server",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 22,
+      "issue": "No rate limiting on server start/stop - DoS via rapid toggling",
+      "exploit": "Rapid start/stop could exhaust ports, cause race conditions in server state, or crash the server.",
+      "fix": "Add rate limiting (e.g., 1 start/stop per 5 seconds). Track last operation timestamp."
+    },
+    {
+      "severity": "MEDIUM",
+      "command": "add_platform_output / update_platform_output",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 262,
+      "issue": "Race condition in settings update - load, modify, save pattern without locking",
+      "exploit": "Concurrent add/update/remove could cause lost updates or corrupted settings file.",
+      "fix": "Use file locking or atomic write (write to temp, rename). Or use a settings mutex."
+    },
+    {
+      "severity": "HIGH",
+      "command": "get_file_version (internal)",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 500,
+      "issue": "Unsafe Windows API usage - path passed directly to GetFileVersionInfoSizeW without validation",
+      "exploit": "If process.exe() returns attacker-controlled path (via symlink, TOCTOU), could read arbitrary file version info. Path used in wide string conversion without bounds checking.",
+      "fix": "Validate executable path is within expected directories (Program Files, etc.). Use canonical path. Limit to known OBS installation paths."
+    },
+    {
+      "severity": "LOW",
+      "command": "All commands returning errors",
+      "file": "src-tauri/src/ipc/commands.rs",
+      "line": 22,
+      "issue": "Error messages leak internal details - file paths, stack traces, internal errors",
+      "exploit": "Errors like 'Failed to create RTMP server: Address already in use (os error 48)' leak internal state. Settings load errors could leak config paths.",
+      "fix": "Sanitize error messages - return generic messages to frontend. Log detailed errors server-side only."
+    },
+    {
+      "severity": "MEDIUM",
+      "command": "HotkeyManager::execute_action_static",
+      "file": "src-tauri/src/hotkeys/mod.rs",
+      "line": 102,
+      "issue": "Hardcoded delay step of 5 seconds - ignores user's delay_step_sec setting",
+      "exploit": "Inconsistency with UI commands - hotkeys bypass configured step size, could allow finer-grained control than intended.",
+      "fix": "Load delay_step_sec from settings and use it instead of hardcoded 5."
+    }
+  ],
+  "summary": {
+    "total_findings": 17,
+    "critical": 0,
+    "high": 4,
+    "medium": 7,
+    "low": 6,
+    "key_risks": [
+      "Mass assignment in update_settings allows full config takeover",
+      "SSRF via platform output URLs (add/update/test)",
+      "No authorization on server control commands",
+      "Race conditions in settings read-modify-write patterns",
+      "Unsafe Windows API usage in OBS version detection",
+      "Error information leakage"
+    ]
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "audit_timestamp": "2026-11-14",
+  "project": "instant-delay",
+  "tauri_version": "2",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "config_path": "tauri.conf.json -> app.security.csp",
+      "category": "CSP Policy",
+      "description": "Content Security Policy allows 'unsafe-inline' and 'unsafe-eval' for script-src, and 'unsafe-inline' for style-src. This significantly weakens XSS protection as inline scripts and eval() are permitted.",
+      "current_value": "script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'",
+      "remediation": "Remove 'unsafe-inline' and 'unsafe-eval' from script-src. Use nonces or hashes for inline scripts. Move inline styles to external CSS files. If inline scripts are required for Tauri's IPC, use 'nonce-<random>' pattern with a CSP nonce generated per request."
+    },
+    {
+      "severity": "MEDIUM",
+      "config_path": "tauri.conf.json -> app.security.csp",
+      "category": "CSP Policy",
+      "description": "connect-src allows all localhost ports (http://localhost:*, ws://localhost:*, http://127.0.0.1:*) which is overly permissive. An attacker who compromises a local service could exfiltrate data.",
+      "current_value": "connect-src 'self' ipc: http://ipc.localhost http://localhost:* ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:*",
+      "remediation": "Restrict connect-src to only the specific ports used: http://localhost:8080 http://localhost:8081 ws://localhost:8080 ws://localhost:8081. Remove wildcard port allowances."
+    },
+    {
+      "severity": "MEDIUM",
+      "config_path": "tauri.conf.json -> app.security.capabilities",
+      "category": "Capabilities",
+      "description": "The 'main-window' capability grants 'core:default' and 'opener:default' permissions. 'core:default' includes many powerful APIs (window management, clipboard, etc.). No principle of least privilege applied.",
+      "current_value": "permissions: [\"core:default\", \"opener:default\"]",
+      "remediation": "Define explicit, minimal permissions. Replace 'core:default' with specific permissions needed: 'core:window:default', 'core:event:default', etc. Use 'core:webview:default' if webview APIs are needed. Avoid 'core:default' in production."
+    },
+    {
+      "severity": "LOW",
+      "config_path": "tauri.conf.json -> app.security",
+      "category": "DevTools",
+      "description": "DevTools not explicitly disabled in release build. Tauri 2 enables DevTools in debug builds only by default, but explicit configuration is recommended for defense-in-depth.",
+      "current_value": "No explicit devtools configuration",
+      "remediation": "Add \"devtools\": false to the window configuration or ensure Tauri's default behavior (DevTools only in debug) is preserved. Consider adding to tauri.conf.json: \"windows\": [{\"security\": {\"devtools\": false}}] for explicit release hardening."
+    },
+    {
+      "severity": "LOW",
+      "config_path": "src-tauri/src/rtmp/mod.rs -> ServerConfig::default()",
+      "category": "Port Binding",
+      "description": "RTMP server default bind_address is '127.0.0.1' (localhost only). This is GOOD - not binding to 0.0.0.0. However, the setting is user-configurable via Settings.bind_address and could be changed to 0.0.0.0.",
+      "current_value": "bind_address: \"127.0.0.1\"",
+      "remediation": "Add validation in SettingsManager::save() or update_settings command to reject 0.0.0.0 or non-loopback addresses for bind_address. Log a warning if non-localhost binding is attempted."
+    },
+    {
+      "severity": "LOW",
+      "config_path": "src-tauri/src/web/mod.rs -> WebServer::start()",
+      "category": "Port Binding",
+      "description": "Web UI server (port 8081) and Overlay server (port 8080) both bind to 127.0.0.1 only. This is GOOD - not exposed to network.",
+      "current_value": "tokio::net::TcpListener::bind(format!(\"127.0.0.1:{}\", port))",
+      "remediation": "No action needed. Configuration is secure by default."
+    },
+    {
+      "severity": "MEDIUM",
+      "config_path": "src-tauri/src/web/mod.rs -> create_router() / create_overlay_router()",
+      "category": "CORS Configuration",
+      "description": "CORS configured with allow_origin(Any), allow_methods(Any), allow_headers(Any) on both main API and overlay routers. This allows any origin to make requests to the local servers.",
+      "current_value": "CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)",
+      "remediation": "Restrict CORS to specific origins. For local-only servers, use allow_origin(\"http://localhost:8080\").allow_origin(\"http://localhost:8081\").allow_origin(\"tauri://localhost\").allow_origin(\"https://tauri.localhost\") or implement origin validation middleware that only allows Tauri's custom protocol origins."
+    },
+    {
+      "severity": "MEDIUM",
+      "config_path": "src-tauri/src/main.rs -> plugins",
+      "category": "Plugin Permissions",
+      "description": "Multiple plugins loaded with default permissions: shell, dialog, opener, http, notification, global-shortcut. No capability restrictions defined for these plugins in tauri.conf.json.",
+      "current_value": "tauri_plugin_shell::init(), tauri_plugin_dialog::init(), tauri_plugin_opener::init(), tauri_plugin_http::init(), tauri_plugin_notification::init(), tauri_plugin_global_shortcut::Builder::new().build()",
+      "remediation": "Define explicit capabilities for each plugin in tauri.conf.json. For example, shell should only allow specific commands if needed. http should restrict to specific domains. global-shortcut should be scoped to registered hotkeys only."
+    },
+    {
+      "severity": "LOW",
+      "config_path": "src-tauri/Cargo.toml -> dependencies",
+      "category": "Auto-updates",
+      "description": "No tauri-plugin-updater dependency found. Auto-updates not configured. This is acceptable if updates are handled externally, but should be documented.",
+      "current_value": "No updater plugin in dependencies",
+      "remediation": "If auto-updates are desired, add tauri-plugin-updater with proper signature verification configuration. If not desired, document the update strategy in README."
+    },
+    {
+      "severity": "LOW",
+      "config_path": "src-tauri/src/ipc/mod.rs -> Settings",
+      "category": "File System / Settings",
+      "description": "Settings stored in user config directory via tauri-plugin-store. No file system scope restrictions defined in capabilities. Settings include sensitive data (stream keys, auth tokens).",
+      "current_value": "tauri_plugin_store::Builder::new().build() with default scope",
+      "remediation": "Define explicit file system scope in capabilities to restrict access to only the settings file. Consider encrypting sensitive settings (stream keys, web_ui_auth_token) at rest."
+    },
+    {
+      "severity": "MEDIUM",
+      "config_path": "src-tauri/src/web/mod.rs -> WebServerState",
+      "category": "Authentication",
+      "description": "Web UI has optional auth_token setting (web_ui_auth_token) but it's not enforced on API endpoints. The auth_token is stored in state but no middleware validates it on incoming requests.",
+      "current_value": "auth_token: Option<String> in WebServerState, not used in route handlers",
+      "remediation": "Implement authentication middleware for /api/* routes when web_ui_auth_token is set. Validate token via Authorization header or query parameter. Return 401 for unauthorized requests."
+    },
+    {
+      "severity": "LOW",
+      "config_path": "src-tauri/src/overlay/mod.rs (not read, inferred)",
+      "category": "Origin/Iframe Security",
+      "description": "Overlay served on localhost:8080 for OBS browser source. Main window runs on different port (dev: 1420, prod: tauri://localhost). Cross-origin but same host. No X-Frame-Options or CSP frame-ancestors headers set on overlay responses.",
+      "current_value": "No frame-ancestors or X-Frame-Options headers on overlay routes",
+      "remediation": "Add CSP frame-ancestors directive to overlay responses: frame-ancestors 'self' http://localhost:8080 http://localhost:8081 tauri://localhost. Or use X-Frame-Options: SAMEORIGIN (though CSP is preferred)."
+    },
+    {
+      "severity": "LOW",
+      "config_path": "tauri.conf.json -> app.withGlobalTauri",
+      "category": "Global API Exposure",
+      "description": "withGlobalTauri: true exposes __TAURI__ global on window object. This allows any JavaScript in the webview to access Tauri APIs. Combined with weak CSP, this increases attack surface.",
+      "current_value": "withGlobalTauri: true",
+      "remediation": "Set withGlobalTauri: false and use Tauri's context isolation (invoke via IPC only). If global access is needed for specific APIs, use a custom preload script to expose only required functions."
+    },
+    {
+      "severity": "LOW",
+      "config_path": "tauri.conf.json -> app.security.freezePrototype",
+      "category": "Prototype Pollution",
+      "description": "freezePrototype: false allows JavaScript prototype modifications. Could lead to prototype pollution attacks if untrusted code executes.",
+      "current_value": "freezePrototype: false",
+      "remediation": "Set freezePrototype: true to prevent prototype pollution. Test for compatibility as this may break some libraries."
+    },
+    {
+      "severity": "INFO",
+      "config_path": "src-tauri/Cargo.toml -> features",
+      "category": "Protocol Handlers",
+      "description": "Custom protocol feature available but not enabled (custom-protocol = [\"tauri/custom-protocol\"]). No custom protocols registered in tauri.conf.json.",
+      "current_value": "Feature defined but not activated",
+      "remediation": "No action needed. Feature is opt-in and not enabled."
+    }
+  ],
+  "summary": {
+    "total_findings": 15,
+    "high": 1,
+    "medium": 5,
+    "low": 8,
+    "info": 1
+  }
+}

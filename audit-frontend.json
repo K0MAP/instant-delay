@@ -1,0 +1,221 @@
+{
+  "audit_timestamp": "2026-11-14",
+  "project": "instant-delay",
+  "summary": {
+    "total_findings": 17,
+    "critical": 2,
+    "high": 5,
+    "medium": 6,
+    "low": 4
+  },
+  "findings": [
+    {
+      "id": "XSS-001",
+      "severity": "HIGH",
+      "category": "XSS",
+      "file": "src/pages/Overlay.tsx",
+      "line": 256,
+      "vector": "Custom CSS injection via user-controlled input in generateOverlayHtml()",
+      "description": "The customCss state (user input from textarea at line 666-672) is directly interpolated into the HTML template without sanitization: `${customCss ? `    <style>${customCss}</style>` : ''}`",
+      "poc": "1. Navigate to Overlay > Customize tab\n2. Enter in Custom CSS: `</style><script>alert('XSS')</script><style>`\n3. Click 'Apply Custom CSS'\n4. Switch to Preview tab - script executes in iframe context",
+      "mitigation": "Sanitize customCss using DOMPurify or a CSS-only sanitizer before interpolation. Alternatively, use a CSS-in-JS approach or restrict to a safe subset of CSS properties via parsing/validation."
+    },
+    {
+      "id": "XSS-002",
+      "severity": "HIGH",
+      "category": "XSS",
+      "file": "src/pages/Overlay.tsx",
+      "line": 339,
+      "vector": "User-controlled delaySec interpolated into inline JavaScript",
+      "description": "The delaySec value from Zustand store is directly interpolated into the generated JavaScript: `delay_sec: ${delaySec}`. While currently numeric, the pattern of string interpolation into JS is dangerous if the data source changes.",
+      "poc": "If delaySec were ever set to a string like `1; alert('XSS')//` via store manipulation, it would execute in the overlay iframe.",
+      "mitigation": "Use JSON.stringify() for all dynamic values interpolated into JavaScript: `delay_sec: ${JSON.stringify(delaySec)}`. Better: pass data via postMessage instead of template interpolation."
+    },
+    {
+      "id": "XSS-003",
+      "severity": "MEDIUM",
+      "category": "XSS",
+      "file": "src/pages/Overlay.tsx",
+      "line": 442,
+      "vector": "srcDoc with unsanitized HTML content",
+      "description": "The iframe uses srcDoc with the full generated HTML including user-controlled customCss. The sandbox attribute allows scripts and same-origin, which means injected scripts can execute with the overlay's origin privileges.",
+      "poc": "Same as XSS-001 - custom CSS injection leads to script execution in iframe.",
+      "mitigation": "Remove 'allow-scripts' from sandbox if not needed, or use a separate origin for the overlay (serve from HTTP server instead of srcDoc). Implement CSP on the overlay page via meta tag."
+    },
+    {
+      "id": "XSS-004",
+      "severity": "MEDIUM",
+      "category": "XSS",
+      "file": "src/main.tsx",
+      "line": 27-34,
+      "vector": "Inline script execution setting CSS variables from settings",
+      "description": "An inline script runs before React mounts, fetching settings via Tauri invoke and setting CSS custom properties. This executes in the main window context with access to all DOM APIs.",
+      "poc": "If settings.overlay_theme.accent_color contains `red; --injected: malicious`, it could inject arbitrary CSS. Though Tauri invoke should return structured data, the pattern is risky.",
+      "mitigation": "Move this logic into a React useEffect in App.tsx after mount, using the settings from the Zustand store which comes from the same Tauri invoke but through the proper React data flow."
+    },
+    {
+      "id": "CSP-001",
+      "severity": "HIGH",
+      "category": "CSP Bypass",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 32,
+      "vector": "Overly permissive CSP with unsafe-inline and unsafe-eval",
+      "description": "CSP allows 'unsafe-inline' for scripts and styles, and 'unsafe-eval' for scripts. Also allows connections to any localhost port via wildcards: `http://localhost:*`, `ws://localhost:*`.",
+      "poc": "An XSS vulnerability anywhere in the app can execute arbitrary inline scripts. The wildcard localhost connections allow connections to any local service.",
+      "mitigation": "Remove 'unsafe-inline' and 'unsafe-eval'. Use nonces or hashes for inline scripts/styles. Restrict connect-src to specific ports (8080, 8081, 1935) instead of wildcards. Add 'strict-dynamic' for trusted scripts."
+    },
+    {
+      "id": "CSP-002",
+      "severity": "MEDIUM",
+      "category": "CSP Bypass",
+      "file": "src/pages/Overlay.tsx",
+      "line": 98-101,
+      "vector": "postMessage with wildcard target origin",
+      "description": "previewRef.current.contentWindow.postMessage({...}, '*') sends messages to any origin. If the iframe is navigated to a different origin, it will receive the message.",
+      "poc": "If an attacker can navigate the preview iframe to a malicious origin (via iframe src manipulation), they receive SET_PREVIEW_MODE messages.",
+      "mitigation": "Use specific target origin: `previewRef.current.contentWindow.postMessage({...}, 'http://localhost:8080')` or better, use the iframe's contentWindow.origin after verifying it matches expected origin."
+    },
+    {
+      "id": "CSP-003",
+      "severity": "LOW",
+      "category": "CSP Bypass",
+      "file": "src/pages/Overlay.tsx",
+      "line": 264-346,
+      "vector": "Inline event handlers and scripts in generated overlay HTML",
+      "description": "The generated overlay HTML contains inline JavaScript with event handlers (ws.onmessage, ws.onclose, window.addEventListener). These require 'unsafe-inline' in CSP.",
+      "poc": "CSP must allow unsafe-inline to support the overlay, weakening overall protection.",
+      "mitigation": "Move overlay JavaScript to an external file served from the overlay HTTP server. Use a proper CSP with nonce or hash for the inline script if it must remain inline."
+    },
+    {
+      "id": "STORAGE-001",
+      "severity": "LOW",
+      "category": "Insecure Storage",
+      "file": "src/store/useStore.ts",
+      "line": 157-163,
+      "vector": "Zustand persist middleware configuration",
+      "description": "The persist middleware correctly excludes sensitive data (settings, platforms, server state) from localStorage. Only activeTab and sidebarOpen are persisted. This is actually a secure configuration.",
+      "poc": "N/A - This is a positive finding. No sensitive data is persisted to localStorage.",
+      "mitigation": "Maintain current configuration. Ensure any future state additions are evaluated for persistence sensitivity."
+    },
+    {
+      "id": "STORAGE-002",
+      "severity": "LOW",
+      "category": "Insecure Storage",
+      "file": "src/hooks/useTauri.ts",
+      "line": 494-515,
+      "vector": "Generic useLocalStorage hook without encryption",
+      "description": "The useLocalStorage hook provides a generic way to persist any data to localStorage without encryption or validation. Currently unused in the codebase but available for misuse.",
+      "poc": "A developer could use this hook to store sensitive data like API tokens, stream keys, or PII in plaintext localStorage.",
+      "mitigation": "Remove the hook if unused, or add encryption (e.g., using Web Crypto API) and schema validation. Add JSDoc warning about not storing sensitive data."
+    },
+    {
+      "id": "STORAGE-003",
+      "severity": "LOW",
+      "category": "Insecure Storage",
+      "file": "src/hooks/useTheme.ts",
+      "line": 8-9, 23,
+      "vector": "localStorage for theme preference",
+      "description": "Theme preference stored in localStorage. Not sensitive but demonstrates localStorage usage pattern.",
+      "poc": "N/A - Low risk, non-sensitive data.",
+      "mitigation": "Acceptable as-is. Consider using sessionStorage if persistence across sessions isn't needed."
+    },
+    {
+      "id": "MSG-001",
+      "severity": "HIGH",
+      "category": "Message Handling",
+      "file": "src/pages/Overlay.tsx",
+      "line": 334-343,
+      "vector": "postMessage listener without origin validation",
+      "description": "window.addEventListener('message', ...) accepts messages from any origin without checking event.origin. The handler directly uses event.data to update the overlay.",
+      "poc": "A malicious website opened in another tab could send a message: window.open('http://localhost:8080/overlay').postMessage({type: 'SET_PREVIEW_MODE', mode: 'instant'}, '*'). The overlay would process it.",
+      "mitigation": "Validate event.origin against expected origins (e.g., 'http://localhost:8080', 'http://127.0.0.1:8080', or the parent window's origin). Reject messages from unexpected origins."
+    },
+    {
+      "id": "MSG-002",
+      "severity": "MEDIUM",
+      "category": "Message Handling",
+      "file": "src/pages/Overlay.tsx",
+      "line": 98-101,
+      "vector": "postMessage from parent to iframe without origin restriction",
+      "description": "Parent sends SET_PREVIEW_MODE to iframe using wildcard target origin '*'. If iframe is navigated elsewhere, that origin receives the message.",
+      "poc": "If iframe src is changed to attacker-controlled page, attacker receives preview mode changes.",
+      "mitigation": "Use specific target origin matching the iframe's expected origin. Verify iframe contentWindow.origin before sending."
+    },
+    {
+      "id": "DEP-001",
+      "severity": "MEDIUM",
+      "category": "Dependency Vulnerabilities",
+      "file": "package.json",
+      "line": 14-29,
+      "vector": "Outdated dependencies with known vulnerabilities",
+      "description": "Several dependencies may have known vulnerabilities. Key packages: @tauri-apps/api@^2.0.0, react@^18.2.0, react-router-dom@^6.22.0, zustand@^4.5.0, lucide-react@^0.400.0, clsx@^2.1.0, react-hot-toast@^2.4.1.",
+      "poc": "Run 'npm audit' to identify specific vulnerabilities. Common issues in these packages include XSS in react-router-dom, prototype pollution in zustand/lodash, etc.",
+      "mitigation": "Run 'npm audit' and 'npm audit fix'. Update all dependencies to latest secure versions. Enable Dependabot or similar for automated updates. Pin exact versions in package-lock.json."
+    },
+    {
+      "id": "BUILD-001",
+      "severity": "MEDIUM",
+      "category": "Build Configuration",
+      "file": "vite.config.ts",
+      "line": 15,
+      "vector": "Source maps enabled in production build",
+      "description": "sourcemap: true in build configuration exposes original TypeScript/React source code in production, aiding reverse engineering and potential vulnerability discovery.",
+      "poc": "Anyone with the built app can view original source code via browser dev tools Sources tab, revealing internal logic, API endpoints, and potential attack surface.",
+      "mitigation": "Set sourcemap: false for production builds. Only enable for development or when explicitly needed for debugging. Use separate config for production."
+    },
+    {
+      "id": "BUILD-002",
+      "severity": "LOW",
+      "category": "Build Configuration",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 33,
+      "vector": "freezePrototype set to false",
+      "description": "Tauri's freezePrototype security feature is disabled. When enabled, it freezes JavaScript built-in prototypes (Object, Array, Function, etc.) to prevent prototype pollution attacks.",
+      "poc": "Prototype pollution via malicious message payloads could affect application behavior if freezePrototype is false.",
+      "mitigation": "Set freezePrototype: true in tauri.conf.json security section. Test for any breakage (rare)."
+    },
+    {
+      "id": "HOTKEY-001",
+      "severity": "MEDIUM",
+      "category": "Hotkey Registration",
+      "file": "src/hooks/useTauri.ts",
+      "line": 213-215,
+      "vector": "Handler name generation collision risk",
+      "description": "acceleratorToHandler() generates handler names by replacing '+' with '_' and lowercasing. Different accelerators could normalize to the same string (e.g., 'Control+Shift+D' and 'Control+Shift+d' both become 'hotkey_control_shift_d').",
+      "poc": "If user configures hotkeys with different case variations, they could collide and trigger the same handler. Also, different key combinations that normalize identically would conflict.",
+      "mitigation": "Normalize accelerator strings consistently before generating handler names. Use a canonical representation (e.g., sorted modifiers + canonical key name). Add validation to detect and prevent duplicate handler names during registration."
+    },
+    {
+      "id": "HOTKEY-002",
+      "severity": "LOW",
+      "category": "Hotkey Registration",
+      "file": "src/hooks/useTauri.ts",
+      "line": 296-306,
+      "vector": "Global shortcut registration without user consent verification",
+      "description": "Global hotkeys are registered automatically on app init if global_hotkeys_enabled is true. No explicit user consent or OS-level permission prompt (Tauri handles this but behavior varies by platform).",
+      "poc": "On some platforms, global shortcuts may be registered without clear user awareness. Malicious configuration could register unexpected shortcuts.",
+      "mitigation": "Add a confirmation dialog when enabling global hotkeys. Show currently registered shortcuts in settings. Provide 'Test Hotkey' functionality to verify behavior."
+    }
+  ],
+  "recommendations": {
+    "immediate": [
+      "Fix XSS-001: Sanitize customCss input in Overlay.tsx",
+      "Fix CSP-001: Tighten CSP in tauri.conf.json",
+      "Fix MSG-001: Add origin validation to postMessage listener",
+      "Run npm audit and fix dependency vulnerabilities"
+    ],
+    "short_term": [
+      "Fix XSS-002, XSS-003: Use JSON.stringify and external overlay scripts",
+      "Fix CSP-002, CSP-003: Use specific origins and move overlay JS to external file",
+      "Fix BUILD-001: Disable source maps in production",
+      "Fix BUILD-002: Enable freezePrototype",
+      "Fix HOTKEY-001: Canonicalize accelerator strings"
+    ],
+    "long_term": [
+      "Serve overlay from HTTP endpoint instead of srcDoc for proper CSP",
+      "Implement Content Security Policy with nonces/hashes",
+      "Add automated dependency scanning in CI/CD",
+      "Security review of Tauri IPC command surface"
+    ]
+  }
+}

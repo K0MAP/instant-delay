@@ -1,0 +1,74 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "InstantDelay",
+  "version": "1.0.0",
+  "identifier": "com.instantdelay.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "InstantDelay - Stream Delay Control",
+        "width": 1000,
+        "height": 700,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "visible": true,
+        "center": true,
+        "hiddenTitle": false,
+        "titleBarStyle": "Visible"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' data: blob: http://localhost:8080 http://127.0.0.1:8080; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://localhost:8080 http://127.0.0.1:8080 http://localhost:8081 http://127.0.0.1:8081 ws://localhost:8080 ws://127.0.0.1:8080 ws://localhost:8081 ws://127.0.0.1:8081;",
+      "freezePrototype": true,
+      "capabilities": [
+        {
+          "identifier": "main-window",
+          "windows": ["main"],
+          "permissions": [
+            "core:window:default",
+            "core:event:default",
+            "core:webview:default",
+            "core:app:default",
+            "opener:default",
+            "shell:allow-open",
+            "dialog:default",
+            "http:default",
+            "notification:default",
+            "global-shortcut:default",
+            "store:default"
+          ]
+        }
+      ]
+    },
+    "withGlobalTauri": false
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "allowDowngrades": false,
+      "digestAlgorithm": "sha256",
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "displayLanguageSelector": false,
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

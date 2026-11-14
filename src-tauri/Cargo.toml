@@ -1,0 +1,62 @@
+[package]
+name = "instant-delay"
+version = "1.0.0"
+description = "Stream delay control for OBS - change delay while live without restart"
+authors = ["Your Name <your@email.com>"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/yourname/instant-delay"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri 2 integrations used by the application.
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-store = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-http = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
+
+# Runtime, serialization, and the in-tree RTMP implementation.
+tokio = { version = "1.38", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bytes = "1.5"
+
+# Local HTTP and WebSocket servers.
+axum = { version = "0.7", features = ["ws", "json"] }
+tower-http = { version = "0.5", features = ["cors"] }
+http = "1.1"
+
+# System integration and settings.
+dirs = "5"
+directories = "5"
+sysinfo = "0.30"
+uuid = { version = "1.7", features = ["v4", "serde"] }
+rand = { version = "0.8", features = ["std_rng"] }
+getrandom = { version = "0.2", features = ["js"] }
+
+# Windows file version info (replaces winapi)
+#[cfg(target_os = "windows")]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_SystemServices",
+] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+anyhow = "1"
+thiserror = "1"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# winapi replaced with windows crate above

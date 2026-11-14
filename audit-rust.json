@@ -1,0 +1,162 @@
+[
+  {
+    "severity": "HIGH",
+    "file": "src-tauri/src/ipc/commands.rs",
+    "line": 500,
+    "description": "Unsafe FFI code in get_file_version() uses raw pointers, transmute, and winapi calls without proper error handling. Buffer allocation uses uninitialized memory, and pointer arithmetic on sub_block could cause out-of-bounds access.",
+    "poc": "Malicious executable path could trigger buffer overflow via VerQueryValueW returning larger len than allocated buffer. Path traversal via process.exe() could read arbitrary file version info.",
+    "patch": "Replace winapi FFI with windows-rs crate (safe abstractions). Validate path is within expected OBS installation directories. Use checked arithmetic for buffer sizes. Add bounds checks on sub_block pointer arithmetic."
+  },
+  {
+    "severity": "HIGH",
+    "file": "src-tauri/src/rtmp/relay.rs",
+    "line": 456,
+    "description": "Uses rand::thread_rng() for RTMP handshake random data (C1). thread_rng() is not cryptographically secure. Predictable handshake could enable connection hijacking or fingerprinting.",
+    "poc": "Attacker observes multiple handshakes, predicts random bytes due to thread_rng() being deterministic after seed. Could craft malicious RTMP server that exploits predictable client randomness.",
+    "patch": "Replace rand::thread_rng() with rand::rngs::OsRng or getrandom::getrandom() for cryptographically secure random bytes in handshake."
+  },
+  {
+    "severity": "HIGH",
+    "file": "src-tauri/src/rtmp/relay.rs",
+    "line": 855,
+    "description": "parse_rtmp_url() has no input validation on URL components. Host, port, app, and stream name are used directly in TCP connection and RTMP commands without sanitization. Could lead to SSRF or command injection.",
+    "poc": "User supplies rtmp://internal-service:1935/app/stream - connects to internal network. URL like rtmp://host:65536/app/stream causes port parse panic. Stream name with newlines could inject RTMP commands.",
+    "patch": "Validate host is public IP or allowed domain. Clamp port to 1-65535. Sanitize app and stream name (alphanumeric + safe chars only). Reject URLs with embedded credentials or IPv6 literals without brackets."
+  },
+  {
+    "severity": "HIGH",
+    "file": "src-tauri/src/web/mod.rs",
+    "line": 108,
+    "description": "CORS configured with allow_origin(Any), allow_methods(Any), allow_headers(Any) on both main API and overlay servers. Exposes all endpoints to any origin, enabling CSRF and data exfiltration from browser contexts.",
+    "poc": "Malicious website makes fetch() to http://127.0.0.1:8081/api/settings, extracts stream keys from platform_outputs. Can also POST to /api/platforms to add attacker-controlled relay output.",
+    "patch": "Restrict CORS to specific origins (tauri://localhost, https://tauri.localhost). For overlay server, only allow OBS browser source origin. Add CSRF tokens for state-changing endpoints. Require auth_token for web UI endpoints."
+  },
+  {
+    "severity": "HIGH",
+    "file": "src-tauri/src/rtmp/buffer.rs",
+    "line": 86,
+    "description": "RingBuffer has no hard memory limit enforcement. max_memory_mb config exists but enforce_capacity() only limits frame counts, not actual memory usage. Memory usage calculation in update_stats() is advisory only.",
+    "poc": "Stream with large video frames (e.g., 4K 60fps) pushes frames until OOM. Each frame up to several MB. 18000 video frames * 5MB = 90GB potential. No backpressure to RTMP sender.",
+    "patch": "Enforce max_memory_mb in enforce_capacity() by tracking actual bytes. When memory exceeds limit, drop oldest frames. Add backpressure signal to session to pause reading. Set reasonable defaults (max 512MB enforced)."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "src-tauri/src/ipc/commands.rs",
+    "line": 30,
+    "description": "SettingsManager::load() uses unwrap_or_default() on Result, silently ignoring corruption or permission errors. Could load empty settings instead of alerting user.",
+    "poc": "Corrupted settings.json (truncated write, disk error) causes serde_json::from_str to fail. App starts with defaults, losing user configuration including stream keys.",
+    "patch": "Return error to caller instead of unwrap_or_default. Add settings validation on load. Implement backup/restore for settings file. Log errors at error level."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "src-tauri/src/ipc/commands.rs",
+    "line": 138,
+    "description": "set_delay clamps to 600 seconds but buffer config max_delay_sec may be lower. No validation that delay_sec <= buffer.max_delay_sec before calling server.set_delay().",
+    "poc": "User sets delay to 600s but buffer configured for 300s. Server accepts but buffer clamps internally. UI shows 600s but actual delay is 300s. Silent mismatch.",
+    "patch": "Validate delay_sec against buffer config max_delay_sec in command. Return error if exceeds. Or auto-adjust buffer config when delay increased."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "src-tauri/src/rtmp/relay.rs",
+    "line": 99,
+    "description": "Relay message channel has unbounded capacity (1000) but no backpressure when relay connection is down. Messages queue indefinitely during reconnection, causing memory growth.",
+    "poc": "Relay target down for hours. Incoming stream at 10Mbps generates ~45GB of queued RelayMessage::SendMessage variants. OOM crash.",
+    "patch": "Add bounded channel with backpressure. Drop oldest messages when full (or apply buffer config keyframe_only). Monitor queue depth and emit metrics. Limit max queued messages per relay."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "src-tauri/src/rtmp/session.rs",
+    "line": 259,
+    "description": "Session::process_message() pushes to buffer without checking if buffer push succeeded. BufferError::Full is returned but ignored (using ? operator which propagates, but caller in server.rs doesn't handle).",
+    "poc": "Buffer full (memory limit reached). push() returns BufferError::Full. Session returns Err. Server's process_rtmp_messages breaks loop, closing connection. Stream interrupted silently.",
+    "patch": "Handle BufferError::Full in process_rtmp_messages. Apply backpressure: pause reading from TCP stream until buffer drains. Or drop non-keyframes when full (keyframe_only mode)."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "src-tauri/src/config/mod.rs",
+    "line": 72,
+    "description": "SettingsManager::import() loads settings from arbitrary user-controlled file path without validation. Path traversal possible via ../ in import path.",
+    "poc": "User imports ../../../etc/passwd or malicious JSON. If JSON parsing succeeds, settings overwritten. Could inject malicious platform URLs or stream keys.",
+    "patch": "Restrict import to files within app config directory. Validate imported settings structure. Sanitize all string fields. Reject settings with suspicious URLs."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "src-tauri/src/ipc/commands.rs",
+    "line": 487,
+    "description": "check_obs_process() uses process.exe() which returns full path. get_file_version() is called on this path. Path could be attacker-controlled if malicious process named obs64.exe.",
+    "poc": "Attacker creates obs64.exe in PATH with malicious version resource. App reads version info from attacker-controlled binary via winapi FFI. Could trigger buffer overflow in get_file_version.",
+    "patch": "Validate process path is in known OBS installation directories (Program Files, AppData). Reject paths outside expected locations. Use allowlist of known OBS paths."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "src-tauri/src/hotkeys/mod.rs",
+    "line": 141,
+    "description": "parse_hotkey() accepts arbitrary string input from settings. No validation on key combinations. Could register system-reserved hotkeys or conflict with OS shortcuts.",
+    "poc": "User sets hotkey to 'Control+Alt+Delete' or 'Meta+L' (Win+L lock). Tauri may register but behavior undefined. Could disable user's ability to unlock screen.",
+    "patch": "Validate hotkey against reserved system combinations. Maintain blocklist (Ctrl+Alt+Del, Win+L, Ctrl+Shift+Esc, etc.). Reject invalid combinations with clear error."
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "src-tauri/src/rtmp/server.rs",
+    "line": 98,
+    "description": "Accept loop spawns unbounded tasks for each connection. No limit on concurrent connections despite max_connections config. Could exhaust file descriptors or memory.",
+    "poc": "Attacker opens 10000 connections to RTMP port. Each spawns tokio task with buffers. Server runs out of memory or hits OS fd limit. Legitimate OBS connection rejected.",
+    "patch": "Enforce max_connections in accept loop. Use semaphore to limit concurrent handle_connection tasks. Reject new connections when at limit with proper RTMP error."
+  },
+  {
+    "severity": "LOW",
+    "file": "src-tauri/src/rtmp/relay.rs",
+    "line": 726,
+    "description": "send_message_internal takes stream from connection, writes, then puts back. If write fails, stream is dropped and reconnect triggered. But bytes_sent is updated before write in success path only.",
+    "poc": "Partial write succeeds (some bytes sent) then connection drops. bytes_sent not updated for partial write. Stats inaccurate but not security issue.",
+    "patch": "Update bytes_sent with actual bytes written. Use write_all which ensures full write or error."
+  },
+  {
+    "severity": "LOW",
+    "file": "src-tauri/src/overlay/mod.rs",
+    "line": 34,
+    "description": "OverlayGenerator::build_html() directly interpolates theme values into HTML/CSS/JS without escaping. Theme values from settings could inject CSS/JS.",
+    "poc": "User sets background_color to 'red;}</style><script>stealStreamKeys()</script>'. Overlay HTML executes attacker JS in OBS browser source context.",
+    "patch": "Escape all user-controlled values in CSS/JS context. Use CSS.escape() for CSS values. For JS, JSON.stringify then embed. Validate theme colors match regex ^(rgba?\\(|#[0-9a-fA-F])."
+  },
+  {
+    "severity": "LOW",
+    "file": "src-tauri/src/ipc/commands.rs",
+    "line": 365,
+    "description": "test_platform_connection() only validates URL starts with rtmp:// or rtmps://. No actual connection test. Returns true for invalid hosts, wrong ports, unreachable servers.",
+    "poc": "User enters rtmp://invalid-host:1935/key. Test passes. User goes live, relay fails silently. Stream not delivered to platform.",
+    "patch": "Implement actual TCP connection test with timeout. Attempt RTMP handshake. Return detailed error (DNS fail, connection refused, handshake fail, auth fail)."
+  },
+  {
+    "severity": "LOW",
+    "file": "src-tauri/src/rtmp/protocol.rs",
+    "line": 127,
+    "description": "write_handshake() fills random data with zeros instead of cryptographically secure random. Server handshake response (S1) is predictable.",
+    "poc": "Passive observer can identify InstantDelay servers by zero-padded handshake. Could enable fingerprinting or targeted attacks.",
+    "patch": "Use OsRng for handshake random data. Ensure both client and server handshakes use CSPRNG."
+  },
+  {
+    "severity": "LOW",
+    "file": "src-tauri/src/web/mod.rs",
+    "line": 478,
+    "description": "overlay_data endpoint returns stream key information in platform_count/connected_platforms but not the keys themselves. However, status endpoint exposes full PlatformOutput with stream_key.",
+    "poc": "Unauthenticated request to /api/status returns all platform outputs including stream keys. If CORS misconfigured (see HIGH finding), any website can steal keys.",
+    "patch": "Sanitize stream_key in all API responses (replace with **** or last 4 chars). Add authentication to web UI endpoints. Remove stream_key from overlay_data response."
+  },
+  {
+    "severity": "LOW",
+    "file": "src-tauri/src/rtmp/buffer.rs",
+    "line": 336,
+    "description": "clear() and skip_to_live() don't wait for in-flight relay operations. Frames may be popped from buffer while relay is sending them, causing use-after-free style issues with Bytes.",
+    "poc": "Relay sends frame (Bytes reference). Simultaneously skip_to_live clears buffer. Relay's Bytes may point to freed memory if refcount hits zero. Rare race condition.",
+    "patch": "Use Arc<Bytes> for frame data. Or add drain mechanism: signal relay to finish current frame before clearing. Or accept that Bytes are refcounted and this is safe in Rust."
+  },
+  {
+    "severity": "INFO",
+    "file": "src-tauri/src/main.rs",
+    "line": 33,
+    "description": "tauri::async_runtime::block_on() in main() blocks runtime before Tauri event loop starts. Could deadlock if SettingsManager::load() uses async fs that requires runtime.",
+    "poc": "Settings load uses tokio::fs. block_on runs on thread that becomes Tauri runtime. If tokio fs requires runtime features not yet initialized, hangs.",
+    "patch": "Move settings load to setup() closure after Tauri runtime initialized. Or use std::fs for initial load, switch to async after."
+  }
+]

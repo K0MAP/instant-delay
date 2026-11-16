@@ -1,7 +1,7 @@
 [package]
 name = "instant-delay"
 version = "1.0.0"
-description = "Stream delay control for OBS - change delay while live without restart"
+description = "Configurable live stream delay and RTMP relay desktop application"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/K0MAP/instant-delay"
@@ -19,6 +19,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-http = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
 
 # Runtime, serialization, and the in-tree RTMP implementation.
 tokio = { version = "1.38", features = ["full"] }

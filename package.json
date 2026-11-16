@@ -1,7 +1,7 @@
 {
   "name": "instant-delay",
   "version": "1.0.0",
-  "description": "Stream delay control for OBS - change delay while live without restart",
+  "description": "Configurable live stream delay and RTMP relay desktop application",
   "type": "module",
   "scripts": {
     "dev": "vite",

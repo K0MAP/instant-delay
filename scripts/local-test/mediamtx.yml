@@ -1,0 +1,23 @@
+# Minimal MediaMTX configuration for local InstantDelay testing.
+# The app's own RTMP ingest stays on 1935; MediaMTX listens on 1936.
+logLevel: info
+
+rtmp: yes
+rtmpAddress: :1936
+
+hls: yes
+hlsAddress: :8888
+
+# Accept any incoming path (the relay publishes to /live/test).
+paths:
+  all_others:
+
+# Not needed for this test; keep the local surface small.
+rtsp: no
+webrtc: no
+moq: no
+srt: no
+api: no
+metrics: no
+pprof: no
+playback: no

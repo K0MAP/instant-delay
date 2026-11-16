@@ -167,6 +167,49 @@ impl RingBuffer {
         ready
     }
 
+    /// Pop frames that are ready for output, merged across media queues in
+    /// arrival order. Video and audio must not be drained independently or
+    /// their relative order is lost.
+    pub async fn pop_ready_ordered(&self, now_ns: u64, max_frames: usize) -> Vec<BufferedFrame> {
+        let delay_ns = (*self.current_delay_sec.read().await as u64) * 1_000_000_000;
+        let mut ready = Vec::new();
+
+        let mut video = self.video_frames.lock().await;
+        let mut audio = self.audio_frames.lock().await;
+        let mut metadata = self.metadata_frames.lock().await;
+
+        while ready.len() < max_frames {
+            let candidates = [
+                video.front().map(|f| (0u8, f.timestamp_ns)),
+                audio.front().map(|f| (1u8, f.timestamp_ns)),
+                metadata.front().map(|f| (2u8, f.timestamp_ns)),
+            ];
+            let Some((queue, timestamp_ns)) = candidates
+                .into_iter()
+                .flatten()
+                .min_by_key(|(_, ts)| *ts)
+            else {
+                break;
+            };
+
+            if now_ns.saturating_sub(timestamp_ns) < delay_ns {
+                break;
+            }
+
+            let frame = match queue {
+                0 => video.pop_front(),
+                1 => audio.pop_front(),
+                _ => metadata.pop_front(),
+            };
+            match frame {
+                Some(frame) => ready.push(frame),
+                None => break,
+            }
+        }
+
+        ready
+    }
+
     /// Get frames ready for output (non-blocking, for relay)
     #[instrument(skip(self))]
     pub async fn get_ready_frames(&self, now_ns: u64, max_frames: usize) -> Vec<BufferedFrame> {

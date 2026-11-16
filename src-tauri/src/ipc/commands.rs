@@ -676,12 +676,19 @@ fn validate_port(port: u16, service: &str) -> Result<(), String> {
 
 fn validate_rtmp_url(url: &str) -> Result<(), String> {
     let (scheme, rest) = url.split_once("://").ok_or_else(|| "RTMP URL must include a scheme".to_string())?;
-    if !matches!(scheme.to_ascii_lowercase().as_str(), "rtmp" | "rtmps") {
-        return Err("Only rtmp:// and rtmps:// URLs are supported".to_string());
+    if scheme.eq_ignore_ascii_case("rtmps") {
+        return Err("RTMPS is not supported yet; use an rtmp:// endpoint".to_string());
+    }
+    if !scheme.eq_ignore_ascii_case("rtmp") {
+        return Err("Only rtmp:// URLs are supported".to_string());
     }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     if authority.is_empty() || authority.contains('@') || authority.contains('\\') {
         return Err("RTMP URL must contain a valid host and must not include credentials".to_string());
+    }
+    // Debug-only escape hatch for testing against a local RTMP sink.
+    if crate::rtmp::allow_private_relay_targets() {
+        return Ok(());
     }
     let host = authority.trim_start_matches('[').split(']').next().unwrap_or(authority)
         .split(':').next().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase();

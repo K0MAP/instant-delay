@@ -13,7 +13,7 @@ use bytes::{Bytes, BytesMut, BufMut};
 use anyhow::{Result, anyhow};
 use uuid::Uuid;
 
-use crate::rtmp::protocol::{RtmpMessage, ChunkHeader, MessageType, HandshakeType, write_handshake, read_handshake, write_chunk, read_chunk, csid, amf0};
+use crate::rtmp::protocol::{RtmpMessage, ChunkHeader, MessageType, write_chunk, ChunkReader, ChunkWriter, csid, amf0};
 use std::io::Seek;
 use crate::ipc::PlatformOutput;
 
@@ -35,6 +35,8 @@ struct RelayConnection {
     stream_id: u32,
     reconnect_attempts: u32,
     last_ping: Instant,
+    // Stateful chunk writer to maintain per-CSID state across messages
+    chunk_writer: ChunkWriter,
 }
 
 /// Messages for relay connection
@@ -116,11 +118,17 @@ impl RelayManager {
             stream_id: 0,
             reconnect_attempts: 0,
             last_ping: Instant::now(),
+            chunk_writer: ChunkWriter::new(),
         }));
 
         // Store connection and queue
         self.connections.write().await.insert(id.clone(), connection.clone());
-        self.message_queues.write().await.insert(id.clone(), tx);
+        self.message_queues.write().await.insert(id.clone(), tx.clone());
+
+        // Connect only after the receiver task is running.
+        if tx.send(RelayMessage::Connect).await.is_err() {
+            warn!("Relay {} could not request an initial connection", id);
+        }
 
         // Spawn connection handler
         let conn_clone = connection.clone();
@@ -224,7 +232,6 @@ impl RelayManager {
 
         loop {
             tokio::select! {
-                // Handle shutdown signal
                 _ = async {
                     if let Some(ref mut shutdown) = shutdown_rx {
                         shutdown.recv().await.ok();
@@ -236,14 +243,10 @@ impl RelayManager {
                     Self::disconnect_internal(connection.clone()).await;
                     break;
                 }
-
-                // Handle incoming messages
                 msg = rx.recv() => {
                     match msg {
                         Some(RelayMessage::Connect) => {
-                            if first_connect {
-                                first_connect = false;
-                            }
+                            if first_connect { first_connect = false; }
                             Self::connect_internal(connection.clone()).await;
                         }
                         Some(RelayMessage::Disconnect) => {
@@ -262,8 +265,6 @@ impl RelayManager {
                         None => break,
                     }
                 }
-
-                // Periodic ping to keep connection alive
                 _ = ping_interval.tick() => {
                     Self::send_ping(connection.clone()).await;
                 }
@@ -271,16 +272,109 @@ impl RelayManager {
         }
     }
 
+    /// Spawn background task to read and handle server control messages
+    fn spawn_reader_task(connection: Arc<Mutex<RelayConnection>>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut reader = ChunkReader::new();
+            let mut stream = {
+                let mut conn = connection.lock().await;
+                conn.stream.take()
+            };
+
+            let Some(mut stream) = stream else {
+                return;
+            };
+
+            loop {
+                match reader.read_message(&mut stream).await {
+                    Ok(message) => {
+                        match message.header.message_type {
+                            MessageType::WindowAcknowledgementSize => {
+                                debug!("Received WindowAcknowledgementSize");
+                                // Could track and send acknowledgement if needed
+                            }
+                            MessageType::SetPeerBandwidth => {
+                                debug!("Received SetPeerBandwidth");
+                            }
+                            MessageType::SetChunkSize => {
+                                if message.payload.len() >= 4 {
+                                    let size = u32::from_be_bytes([
+                                        message.payload[0],
+                                        message.payload[1],
+                                        message.payload[2],
+                                        message.payload[3],
+                                    ]);
+                                    debug!("Server set chunk size to {}", size);
+                                    let mut conn = connection.lock().await;
+                                    conn.chunk_writer.set_chunk_size(size);
+                                }
+                            }
+                            MessageType::UserControl => {
+                                if message.payload.len() >= 6 {
+                                    let event_type = u16::from_be_bytes([message.payload[0], message.payload[1]]);
+                                    if event_type == 6 { // PingRequest
+                                        // Respond with PingResponse (event type 7)
+                                        let mut payload = bytes::BytesMut::with_capacity(6);
+                                        payload.extend_from_slice(&7u16.to_be_bytes());
+                                        payload.extend_from_slice(&message.payload[2..6]);
+                                        let response = RtmpMessage {
+                                            header: ChunkHeader {
+                                                chunk_stream_id: csid::PROTOCOL_CONTROL,
+                                                timestamp: 0,
+                                                message_length: 6,
+                                                message_type: MessageType::UserControl,
+                                                message_stream_id: 0,
+                                            },
+                                            payload: payload.freeze(),
+                                        };
+                                        // Send ping response using chunk_writer - use separate borrows
+                                        let mut conn = connection.lock().await;
+                                        // Take stream out temporarily to avoid double borrow
+                                        let mut stream_opt = conn.stream.take();
+                                        let writer = &mut conn.chunk_writer;
+                                        if let Some(ref mut stream) = stream_opt {
+                                            let _ = writer.write_message(stream, &response).await;
+                                        }
+                                        // Put stream back
+                                        conn.stream = stream_opt;
+                                    }
+                                }
+                            }
+                            MessageType::Acknowledgement => {
+                                debug!("Received Acknowledgement");
+                            }
+                            _ => {
+                                debug!("Received unexpected message type: {:?}", message.header.message_type);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("EOF") || e.to_string().contains("closed") {
+                            debug!("Server closed connection");
+                        } else {
+                            debug!("Reader error: {}", e);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // Put stream back (will be None since connection is dead)
+            let mut conn = connection.lock().await;
+            conn.stream = Some(stream);
+        })
+    }
+
     /// Internal connect implementation with full RTMP handshake
     async fn connect_internal(connection: Arc<Mutex<RelayConnection>>) {
-        let (url, stream_key, tc_url) = {
+        let (url, stream_key) = {
             let mut conn = connection.lock().await;
             if conn.connected || conn.connecting {
                 return;
             }
             conn.connecting = true;
             conn.last_error = None;
-            (conn.output.url.clone(), conn.output.stream_key.clone(), conn.output.url.clone())
+            (conn.output.url.clone(), conn.output.stream_key.clone())
         };
 
         // Parse RTMP URL
@@ -341,8 +435,12 @@ impl RelayManager {
             return;
         }
 
-        // Send connect command
-        if let Err(e) = Self::send_connect_command(&mut stream, &app, &tc_url).await {
+        // One reader for the whole connection: RTMP chunk headers are stateful.
+        let mut reader = ChunkReader::new();
+
+        // Send connect command using stateful chunk writer
+        let tc_url = format!("rtmp://{}:{}/{}", host, port, app);
+        if let Err(e) = Self::send_connect_command_internal(connection.clone(), &mut stream, &app, &tc_url).await {
             {
                 let mut conn = connection.lock().await;
                 conn.connecting = false;
@@ -354,7 +452,7 @@ impl RelayManager {
         }
 
         // Read connect response and handle window acknowledgment
-        let (chunk_size, stream_id) = match Self::read_connect_response(&mut stream).await {
+        let chunk_size = match Self::read_connect_response(&mut stream, &mut reader).await {
             Ok(result) => result,
             Err(e) => {
                 {
@@ -368,15 +466,21 @@ impl RelayManager {
             }
         };
 
+        // Update chunk writer with negotiated size
+        {
+            let mut conn = connection.lock().await;
+            conn.chunk_writer.set_chunk_size(chunk_size);
+        }
+
         // Send setChunkSize if server sent different size
         if chunk_size != 128 {
-            if let Err(e) = Self::send_set_chunk_size(&mut stream, chunk_size).await {
+            if let Err(e) = Self::send_set_chunk_size_internal(connection.clone(), &mut stream, chunk_size).await {
                 warn!("Failed to set chunk size: {}", e);
             }
         }
 
         // Send createStream
-        if let Err(e) = Self::send_create_stream(&mut stream).await {
+        if let Err(e) = Self::send_create_stream_internal(connection.clone(), &mut stream).await {
             {
                 let mut conn = connection.lock().await;
                 conn.connecting = false;
@@ -388,7 +492,7 @@ impl RelayManager {
         }
 
         // Read createStream response to get stream ID
-        let stream_id = match Self::read_create_stream_response(&mut stream).await {
+        let stream_id = match Self::read_create_stream_response(&mut stream, &mut reader).await {
             Ok(id) => id,
             Err(e) => {
                 {
@@ -403,7 +507,7 @@ impl RelayManager {
         };
 
         // Send publish
-        if let Err(e) = Self::send_publish(&mut stream, &stream_name, stream_id).await {
+        if let Err(e) = Self::send_publish_internal(connection.clone(), &mut stream, &stream_name, stream_id).await {
             {
                 let mut conn = connection.lock().await;
                 conn.connecting = false;
@@ -415,7 +519,7 @@ impl RelayManager {
         }
 
         // Read publish response (onStatus)
-        if let Err(e) = Self::read_publish_response(&mut stream).await {
+        if let Err(e) = Self::read_publish_response(&mut stream, &mut reader).await {
             {
                 let mut conn = connection.lock().await;
                 conn.connecting = false;
@@ -435,6 +539,7 @@ impl RelayManager {
             conn.connected_at = Some(Instant::now());
             conn.bytes_sent = 0;
             conn.chunk_size = chunk_size;
+            conn.chunk_writer.set_chunk_size(chunk_size);
             conn.stream_id = stream_id;
             conn.reconnect_attempts = 0;
             conn.last_ping = Instant::now();
@@ -462,18 +567,22 @@ impl RelayManager {
         stream.write_all(&c0c1).await?;
         stream.flush().await?;
 
-        // Read S0 + S1 + S2 (1537 bytes)
-        let mut s0s1s2 = [0u8; 1537];
-        stream.read_exact(&mut s0s1s2).await?;
+        // Read S0 + S1 (1537 bytes)
+        let mut s0s1 = [0u8; 1537];
+        stream.read_exact(&mut s0s1).await?;
 
         // Verify S0 version
-        if s0s1s2[0] != 3 {
-            return Err(anyhow!("Unsupported RTMP version: {}", s0s1s2[0]));
+        if s0s1[0] != 3 {
+            return Err(anyhow!("Unsupported RTMP version: {}", s0s1[0]));
         }
 
         // Send C2 (copy of S1)
-        stream.write_all(&s0s1s2[1..1537]).await?;
+        stream.write_all(&s0s1[1..1537]).await?;
         stream.flush().await?;
+
+        // Consume S2 if the server sends it.
+        let mut s2 = [0u8; 1536];
+        stream.read_exact(&mut s2).await?;
 
         Ok(())
     }
@@ -498,24 +607,17 @@ impl RelayManager {
     }
 
     /// Read connect response and handle protocol control messages
-    async fn read_connect_response(stream: &mut TcpStream) -> Result<(u32, u32)> {
-        let mut chunk_size = 128;
-        let mut stream_id = 0;
+    async fn read_connect_response(stream: &mut TcpStream, reader: &mut ChunkReader) -> Result<u32> {
         let mut got_result = false;
 
         // Read messages until we get _result for connect
         for _ in 0..20 { // Limit to prevent infinite loop
-            let message = read_chunk(stream).await?;
+            let message = reader.read_message(stream).await?;
 
             match message.header.message_type {
                 MessageType::SetChunkSize => {
-                    if message.payload.len() >= 4 {
-                        chunk_size = u32::from_be_bytes([
-                            message.payload[0], message.payload[1],
-                            message.payload[2], message.payload[3]
-                        ]);
-                        debug!("Server set chunk size to {}", chunk_size);
-                    }
+                    // ChunkReader has already applied the new chunk size.
+                    debug!("Server set chunk size to {}", reader.chunk_size());
                 }
                 MessageType::WindowAcknowledgementSize => {
                     // Server window ack size - ignore for client
@@ -544,7 +646,7 @@ impl RelayManager {
             return Err(anyhow!("Did not receive _result for connect"));
         }
 
-        Ok((chunk_size, stream_id))
+        Ok(reader.chunk_size())
     }
 
     /// Send setChunkSize command
@@ -586,9 +688,9 @@ impl RelayManager {
     }
 
     /// Read createStream response to get stream ID
-    async fn read_create_stream_response(stream: &mut TcpStream) -> Result<u32> {
+    async fn read_create_stream_response(stream: &mut TcpStream, reader: &mut ChunkReader) -> Result<u32> {
         for _ in 0..10 {
-            let message = read_chunk(stream).await?;
+            let message = reader.read_message(stream).await?;
 
             if message.header.message_type == MessageType::CommandAMF0 {
                 if let Some((cmd, trans_id)) = Self::parse_command_response(&message.payload) {
@@ -625,9 +727,9 @@ impl RelayManager {
     }
 
     /// Read publish response (onStatus)
-    async fn read_publish_response(stream: &mut TcpStream) -> Result<()> {
+    async fn read_publish_response(stream: &mut TcpStream, reader: &mut ChunkReader) -> Result<()> {
         for _ in 0..10 {
-            let message = read_chunk(stream).await?;
+            let message = reader.read_message(stream).await?;
 
             if message.header.message_type == MessageType::CommandAMF0 {
                 if let Some((cmd, _)) = Self::parse_command_response(&message.payload) {
@@ -643,6 +745,103 @@ impl RelayManager {
             }
         }
         Ok(()) // Assume success if no error
+    }
+
+    /// Internal send connect command using stateful chunk writer
+    async fn send_connect_command_internal(
+        connection: Arc<Mutex<RelayConnection>>,
+        stream: &mut TcpStream,
+        app: &str,
+        tc_url: &str,
+    ) -> Result<()> {
+        let mut payload = BytesMut::new();
+        amf0::write_connect_command(&mut payload, app, tc_url);
+
+        let message = RtmpMessage {
+            header: ChunkHeader {
+                chunk_stream_id: csid::COMMAND,
+                timestamp: 0,
+                message_length: payload.len() as u32,
+                message_type: MessageType::CommandAMF0,
+                message_stream_id: 0,
+            },
+            payload: payload.freeze(),
+        };
+
+        let mut conn = connection.lock().await;
+        conn.chunk_writer.write_message(stream, &message).await
+    }
+
+    /// Internal send setChunkSize command using stateful chunk writer
+    async fn send_set_chunk_size_internal(
+        connection: Arc<Mutex<RelayConnection>>,
+        stream: &mut TcpStream,
+        size: u32,
+    ) -> Result<()> {
+        let mut payload = BytesMut::with_capacity(4);
+        payload.put_u32(size);
+
+        let message = RtmpMessage {
+            header: ChunkHeader {
+                chunk_stream_id: csid::PROTOCOL_CONTROL,
+                timestamp: 0,
+                message_length: 4,
+                message_type: MessageType::SetChunkSize,
+                message_stream_id: 0,
+            },
+            payload: payload.freeze(),
+        };
+
+        let mut conn = connection.lock().await;
+        conn.chunk_writer.write_message(stream, &message).await
+    }
+
+    /// Internal send createStream command using stateful chunk writer
+    async fn send_create_stream_internal(
+        connection: Arc<Mutex<RelayConnection>>,
+        stream: &mut TcpStream,
+    ) -> Result<()> {
+        let mut payload = BytesMut::new();
+        amf0::write_create_stream_command(&mut payload);
+
+        let message = RtmpMessage {
+            header: ChunkHeader {
+                chunk_stream_id: csid::COMMAND,
+                timestamp: 0,
+                message_length: payload.len() as u32,
+                message_type: MessageType::CommandAMF0,
+                message_stream_id: 0,
+            },
+            payload: payload.freeze(),
+        };
+
+        let mut conn = connection.lock().await;
+        conn.chunk_writer.write_message(stream, &message).await
+    }
+
+    /// Internal send publish command using stateful chunk writer
+    async fn send_publish_internal(
+        connection: Arc<Mutex<RelayConnection>>,
+        stream: &mut TcpStream,
+        stream_name: &str,
+        stream_id: u32,
+    ) -> Result<()> {
+        let mut payload = BytesMut::new();
+        amf0::write_publish_command(&mut payload, stream_name, "live");
+
+        let message = RtmpMessage {
+            header: ChunkHeader {
+                chunk_stream_id: csid::COMMAND,
+                timestamp: 0,
+                message_length: payload.len() as u32,
+                message_type: MessageType::CommandAMF0,
+                message_stream_id: stream_id,
+            },
+            payload: payload.freeze(),
+        };
+
+        let mut conn = connection.lock().await;
+        conn.chunk_writer.write_message(stream, &message).await
     }
 
     /// Parse command response to get command name and transaction ID
@@ -730,6 +929,7 @@ impl RelayManager {
         let mut conn = connection.lock().await;
         if conn.connected {
             conn.chunk_size = size;
+            conn.chunk_writer.set_chunk_size(size);
         }
     }
 
@@ -737,7 +937,7 @@ impl RelayManager {
     async fn send_message_internal(connection: Arc<Mutex<RelayConnection>>, message: RtmpMessage) {
         // Prepare the message with correct stream ID and chunk stream ID
         let mut msg = message;
-        let (chunk_size, stream_id) = {
+        {
             let mut conn = connection.lock().await;
             if !conn.connected {
                 return;
@@ -758,10 +958,9 @@ impl RelayManager {
                 }
                 _ => {}
             }
-            (conn.chunk_size, conn.stream_id)
-        };
+        }
 
-        // Now get the stream and send
+        // Now get the stream and send using stateful chunk_writer
         let mut stream = {
             let mut conn = connection.lock().await;
             conn.stream.take()
@@ -771,7 +970,13 @@ impl RelayManager {
             return;
         };
 
-        match write_chunk(&mut stream, &msg).await {
+        // Use the stateful chunk_writer to maintain per-CSID state across messages
+        let write_result = {
+            let mut conn = connection.lock().await;
+            conn.chunk_writer.write_message(&mut stream, &msg).await
+        };
+
+        match write_result {
             Ok(()) => {
                 let mut conn = connection.lock().await;
                 conn.bytes_sent += msg.payload.len() as u64;
@@ -857,8 +1062,10 @@ impl RelayManager {
     /// Parse RTMP URL with SSRF protection
     fn parse_rtmp_url(url: &str, stream_key: &str) -> Result<(String, u16, String, String)> {
         // rtmp://host:port/app/stream
+        if url.starts_with("rtmps://") {
+            anyhow::bail!("RTMPS is not supported yet; use an rtmp:// endpoint");
+        }
         let url = url.strip_prefix("rtmp://").unwrap_or(url);
-        let url = url.strip_prefix("rtmps://").unwrap_or(url);
 
         // Reject URLs with embedded credentials (user:pass@host)
         if url.contains('@') {
@@ -892,8 +1099,10 @@ impl RelayManager {
             (host_port.to_string(), 1935)
         };
 
-        // SSRF Protection: Block private/internal IP ranges
-        if Self::is_private_or_internal_host(&host) {
+        // SSRF Protection: Block private/internal IP ranges.
+        // Local testing against an on-machine RTMP sink is allowed only in
+        // debug builds when explicitly opted in.
+        if !crate::rtmp::allow_private_relay_targets() && Self::is_private_or_internal_host(&host) {
             anyhow::bail!("Connection to private/internal addresses is not allowed: {}", host);
         }
 

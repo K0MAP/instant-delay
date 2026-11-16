@@ -16,8 +16,10 @@ import { useIsBuffering, useBufferFillPercent, useServerRunning } from '../store
 import { useServer, useDelayControl, useSystem, useNotifications } from '../hooks/useTauri';
 import { useState, useEffect } from 'react';
 import clsx from 'clsx';
+import { useTranslation } from '../i18n';
 
 export function Dashboard() {
+  const { t } = useTranslation();
   const { startServer, stopServer } = useServer();
   const {
     delaySec,
@@ -83,8 +85,8 @@ export function Dashboard() {
       {/* Header with Server Control */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-surface-50">Dashboard</h2>
-          <p className="text-surface-400 text-sm mt-1">Monitor and control your stream delay in real-time</p>
+          <h2 className="text-2xl font-bold text-surface-50">{t('Dashboard')}</h2>
+          <p className="text-surface-400 text-sm mt-1">{t('Monitor and control your stream delay in real-time')}</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -95,7 +97,7 @@ export function Dashboard() {
               disabled={changingDelay}
             >
               <Power className="w-4 h-4" />
-              Start Server
+              {t('Start Server')}
             </button>
           ) : (
             <>
@@ -105,7 +107,7 @@ export function Dashboard() {
                 disabled={changingDelay}
               >
                 <Power className="w-4 h-4" />
-                Stop Server
+                {t('Stop Server')}
               </button>
               <button
                 onClick={skipToLive}
@@ -113,7 +115,7 @@ export function Dashboard() {
                 disabled={!isBuffering || changingDelay}
               >
                 <SkipForward className="w-4 h-4" />
-                Skip to Live
+                {t('Skip to Live')}
               </button>
             </>
           )}
@@ -126,10 +128,10 @@ export function Dashboard() {
         <div className="stat-card">
           <div className="flex items-start justify-between">
             <div>
-              <p className="stat-label">Current Delay</p>
+              <p className="stat-label">{t('Current Delay')}</p>
               <div className="delay-display">
                 <span className="delay-value text-primary-400">{delaySec}</span>
-                <span className="delay-unit">seconds</span>
+                <span className="delay-unit">{t('seconds')}</span>
               </div>
             </div>
             <div className={clsx(
@@ -147,7 +149,7 @@ export function Dashboard() {
           {/* Buffer Progress */}
           <div className="mt-4">
             <div className="flex items-center justify-between text-xs mb-1">
-              <span className="text-surface-400">Buffer Fill</span>
+              <span className="text-surface-400">{t('Buffer Fill')}</span>
               <span className="font-mono text-surface-300">{bufferFillPercent.toFixed(1)}%</span>
             </div>
             <div className="buffer-container">
@@ -157,7 +159,7 @@ export function Dashboard() {
               />
             </div>
             <p className="text-xs text-surface-500 mt-1">
-              {isBuffering ? 'Buffering...' : 'Ready for delayed output'}
+              {isBuffering ? t('Buffering...') : t('Ready for delayed output')}
             </p>
           </div>
         </div>
@@ -166,8 +168,8 @@ export function Dashboard() {
         <div className="stat-card">
           <div className="flex items-start justify-between">
             <div>
-              <p className="stat-label">Delay Mode</p>
-              <p className="text-2xl font-bold text-surface-50 capitalize">{delayMode}</p>
+              <p className="stat-label">{t('Delay Mode')}</p>
+              <p className="text-2xl font-bold text-surface-50 capitalize">{t(delayMode.charAt(0).toUpperCase() + delayMode.slice(1))}</p>
             </div>
             <div className={clsx(
               'w-12 h-12 rounded-xl flex items-center justify-center',
@@ -189,7 +191,7 @@ export function Dashboard() {
               )}
               disabled={changingDelay}
             >
-              Instant
+              {t('Instant')}
             </button>
             <button
               onClick={() => import('@tauri-apps/api/core').then(({ invoke }) => invoke('set_mode', { mode: 'normal' }))}
@@ -199,7 +201,7 @@ export function Dashboard() {
               )}
               disabled={changingDelay}
             >
-              Normal
+              {t('Normal')}
             </button>
             <button
               onClick={() => import('@tauri-apps/api/core').then(({ invoke }) => invoke('set_mode', { mode: 'disabled' }))}
@@ -209,48 +211,48 @@ export function Dashboard() {
               )}
               disabled={changingDelay}
             >
-              Disabled
+              {t('Disabled')}
             </button>
           </div>
         </div>
 
         {/* Server Stats Card */}
         <div className="stat-card">
-          <p className="stat-label">Server Stats</p>
+          <p className="stat-label">{t('Server Stats')}</p>
           <div className="grid grid-cols-2 gap-4 mt-4">
             <div>
               <p className="stat-value font-mono" id="connections">-</p>
-              <p className="stat-label">Connections</p>
+              <p className="stat-label">{t('Connections')}</p>
             </div>
             <div>
               <p className="stat-value font-mono" id="uptime">-</p>
-              <p className="stat-label">Uptime</p>
+              <p className="stat-label">{t('Uptime')}</p>
             </div>
             <div>
               <p className="stat-value font-mono" id="bytesIn">-</p>
-              <p className="stat-label">Data In</p>
+              <p className="stat-label">{t('Data In')}</p>
             </div>
             <div>
               <p className="stat-value font-mono" id="bytesOut">-</p>
-              <p className="stat-label">Data Out</p>
+              <p className="stat-label">{t('Data Out')}</p>
             </div>
           </div>
         </div>
 
         {/* System Info Card */}
         <div className="stat-card">
-          <p className="stat-label">System</p>
+          <p className="stat-label">{t('System')}</p>
           <div className="space-y-3 mt-4">
             <div className="flex justify-between text-sm">
-              <span className="text-surface-400">CPU</span>
+              <span className="text-surface-400">{t('CPU')}</span>
               <span className="text-surface-300 font-mono" id="cpuUsage">-</span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-surface-400">Memory</span>
+              <span className="text-surface-400">{t('Memory')}</span>
               <span className="text-surface-300 font-mono" id="memoryUsage">-</span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-surface-400">OBS</span>
+              <span className="text-surface-400">OBS Input</span>
               <span className="text-surface-300 font-mono" id="obsStatus">Checking...</span>
             </div>
             <div className="flex justify-between text-sm">

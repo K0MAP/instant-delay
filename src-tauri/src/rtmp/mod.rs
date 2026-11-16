@@ -42,6 +42,18 @@ impl Default for ServerConfig {
     }
 }
 
+/// Whether private/loopback relay destinations are permitted.
+///
+/// This exists only for local end-to-end testing against an on-machine RTMP
+/// sink. It is compiled out of release builds and must be opted into at
+/// runtime with `INSTANTDELAY_ALLOW_PRIVATE_RELAY=1`.
+pub fn allow_private_relay_targets() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("INSTANTDELAY_ALLOW_PRIVATE_RELAY")
+            .map(|value| value == "1")
+            .unwrap_or(false)
+}
+
 /// Server status information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerStatus {

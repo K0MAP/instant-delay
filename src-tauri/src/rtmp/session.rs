@@ -199,9 +199,13 @@ impl SessionManager {
 }
 
 impl Session {
-    /// Process incoming RTMP message
+    /// Process an incoming media message.
+    ///
+    /// Returns messages that can be relayed immediately. In delay mode the
+    /// frame is buffered and an empty vector is returned; the caller is
+    /// expected to relay whatever [`Session::drain_ready`] yields.
     #[instrument(skip(self, message))]
-    pub async fn process_message(&self, message: RtmpMessage) -> Result<Option<RtmpMessage>> {
+    pub async fn process_message(&self, message: RtmpMessage) -> Result<Vec<RtmpMessage>> {
         // Update activity
         *self.last_activity.write().await = Instant::now();
         *self.bytes_received.write().await += message.payload.len() as u64;
@@ -232,58 +236,75 @@ impl Session {
             FrameType::Metadata => {
                 let _ = self.event_tx.try_send(SessionEvent::Metadata { data: message.payload.clone() });
             }
-            _ => {}
+            FrameType::Unknown => return Ok(Vec::new()),
         }
 
-        // Check delay mode
+        // Metadata describes the stream (codec, resolution) and must reach the
+        // destination before media, so it is never delayed.
+        if frame_type == FrameType::Metadata {
+            return Ok(vec![message]);
+        }
+
+        // Check delay mode. Only Disabled means "no delay"; Instant and Normal
+        // both apply the configured delay, differing only in how the UI
+        // presents the buffer.
         let config = self.config.read().await;
         let delay_mode = config.delay_mode.clone();
         let delay_sec = config.default_delay_sec;
         drop(config);
 
-        // In disabled mode, pass through immediately
-        if delay_mode == DelayMode::Disabled || delay_sec == 0 {
-            return Ok(Some(message));
+        let effective_delay = match delay_mode {
+            DelayMode::Normal | DelayMode::Instant => delay_sec,
+            DelayMode::Disabled => 0,
+        };
+
+        if effective_delay == 0 {
+            return Ok(vec![message]);
         }
 
-        // Create buffered frame
+        // Rebuild the header without consuming the payload before buffering.
         let buffered = BufferedFrame {
             data: message.payload,
             timestamp,
             timestamp_ns: current_timestamp_ns(),
             frame_type,
             is_keyframe,
-            stream_id: message.header.chunk_stream_id as u32,
+            stream_id: message.header.chunk_stream_id,
         };
-
-        // Push to buffer
         self.buffer.push(buffered).await?;
 
-        // In Instant mode, return ready frames immediately
-        if delay_mode == DelayMode::Instant {
-            let ready = self.buffer.pop_ready(current_timestamp_ns()).await;
-            if let Some(frame) = ready.first() {
-                // Reconstruct message from buffered frame
-                return Ok(Some(RtmpMessage {
+        Ok(Vec::new())
+    }
+
+    /// Pop frames whose configured delay has elapsed and convert them back to
+    /// RTMP messages, preserving their original relative order.
+    pub async fn drain_ready(&self) -> Vec<RtmpMessage> {
+        let frames = self
+            .buffer
+            .pop_ready_ordered(current_timestamp_ns(), 512)
+            .await;
+
+        frames
+            .into_iter()
+            .map(|frame| {
+                let (chunk_stream_id, message_type) = match frame.frame_type {
+                    FrameType::Video => (crate::rtmp::protocol::csid::VIDEO, MessageType::Video),
+                    FrameType::Audio => (crate::rtmp::protocol::csid::AUDIO, MessageType::Audio),
+                    FrameType::Metadata => (crate::rtmp::protocol::csid::DATA, MessageType::Metadata),
+                    FrameType::Unknown => (crate::rtmp::protocol::csid::DATA, MessageType::Unknown),
+                };
+                RtmpMessage {
                     header: crate::rtmp::protocol::ChunkHeader {
-                        chunk_stream_id: frame.stream_id as u32,
+                        chunk_stream_id,
                         timestamp: frame.timestamp,
                         message_length: frame.data.len() as u32,
-                        message_type: match frame.frame_type {
-                            FrameType::Video => MessageType::Video,
-                            FrameType::Audio => MessageType::Audio,
-                            FrameType::Metadata => MessageType::Metadata,
-                            _ => MessageType::Unknown,
-                        },
+                        message_type,
                         message_stream_id: 0,
                     },
-                    payload: frame.data.clone(),
-                }));
-            }
-        }
-
-        // In Normal mode, don't return frames yet (buffering)
-        Ok(None)
+                    payload: frame.data,
+                }
+            })
+            .collect()
     }
 
     /// Check if video frame is a keyframe (simplified)

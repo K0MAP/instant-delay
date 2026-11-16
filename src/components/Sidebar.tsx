@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useStore, useSidebarOpen, useServerRunning, useDelaySec, useDelayMode, useIsBuffering } from '../store/useStore';
 import clsx from 'clsx';
+import { useTranslation } from '../i18n';
 
 const navigation = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -23,6 +24,7 @@ const navigation = [
 ];
 
 export function Sidebar() {
+  const { t } = useTranslation();
   const location = useLocation();
   const sidebarOpen = useSidebarOpen();
   const { toggleSidebar } = useStore();
@@ -51,11 +53,11 @@ export function Sidebar() {
           isMobile ? (sidebarOpen ? 'sidebar-open translate-x-0' : 'sidebar-closed -translate-x-full') : 'w-64',
           'lg:w-64 lg:translate-x-0'
         )}
-        aria-label="Main navigation"
+        aria-label={t('Main navigation')}
       >
         {/* Logo/Brand */}
         <div className="flex items-center justify-between h-16 px-4 border-b border-surface-800">
-          <NavLink to="/dashboard" className="flex items-center gap-2" aria-label="InstantDelay Home">
+          <NavLink to="/dashboard" className="flex items-center gap-2" aria-label={t('InstantDelay Home')}>
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center">
               <Zap className="w-5 h-5 text-white" aria-hidden="true" />
             </div>
@@ -66,7 +68,7 @@ export function Sidebar() {
             <button
               onClick={toggleSidebar}
               className="p-1.5 rounded-lg text-surface-400 hover:text-surface-100 hover:bg-surface-800 transition-colors"
-              aria-label="Close sidebar"
+              aria-label={t('Close sidebar')}
             >
               <ChevronRight className="w-5 h-5" aria-hidden="true" />
             </button>
@@ -85,17 +87,17 @@ export function Sidebar() {
             aria-hidden="true" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-surface-300 truncate">
-                {serverRunning ? (isBuffering ? 'Buffering...' : 'Live') : 'Offline'}
+                {serverRunning ? (isBuffering ? t('Buffering...') : t('Live')) : t('Offline')}
               </p>
               <p className="text-xs text-surface-500 truncate">
-                {serverRunning ? `${delaySec}s ${delayMode}` : 'Click to start'}
+                {serverRunning ? `${delaySec}s ${t(delayMode.charAt(0).toUpperCase() + delayMode.slice(1))}` : t('Click to start')}
               </p>
             </div>
           </div>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-3 space-y-1" aria-label="Main navigation">
+        <nav className="flex-1 p-3 space-y-1" aria-label={t('Main navigation')}>
           {navigation.map((item) => {
             const Icon = item.icon;
             return (
@@ -110,7 +112,7 @@ export function Sidebar() {
               onClick={() => isMobile && toggleSidebar()}
             >
               <Icon className="w-5 h-5 flex-shrink-0" aria-hidden="true" />
-              <span>{item.label}</span>
+              <span>{t(item.label)}</span>
             </NavLink>
             );
           })}
@@ -119,26 +121,26 @@ export function Sidebar() {
         {/* Quick Actions */}
         <div className="p-3 border-t border-surface-800">
           <p className="px-3 py-1 text-xs font-semibold text-surface-500 uppercase tracking-wider">
-            Quick Actions
+            {t('Quick Actions')}
           </p>
           <div className="space-y-2">
             <button
               className="w-full sidebar-item justify-center gap-2"
               onClick={() => import('@tauri-apps/api/core').then(({ invoke }) => invoke('toggle_delay'))}
               disabled={!serverRunning}
-              aria-label={serverRunning ? 'Toggle delay' : 'Start server first'}
+              aria-label={serverRunning ? t('Toggle Delay') : t('Start server first')}
             >
               <Activity className="w-5 h-5" aria-hidden="true" />
-              <span>Toggle Delay</span>
+              <span>{t('Toggle Delay')}</span>
             </button>
             <button
               className="w-full sidebar-item justify-center gap-2"
               onClick={() => import('@tauri-apps/api/core').then(({ invoke }) => invoke('skip_to_live'))}
               disabled={!serverRunning || !isBuffering}
-              aria-label={isBuffering ? 'Skip to live' : 'Not buffering'}
+              aria-label={isBuffering ? t('Skip to Live') : t('Not buffering')}
             >
               <Wifi className="w-5 h-5" aria-hidden="true" />
-              <span>Skip to Live</span>
+              <span>{t('Skip to Live')}</span>
             </button>
           </div>
         </div>
@@ -150,7 +152,7 @@ export function Sidebar() {
             <button
               onClick={toggleSidebar}
               className="p-1.5 rounded-lg hover:bg-surface-800 transition-colors lg:hidden"
-              aria-label="Collapse sidebar"
+              aria-label={t('Collapse sidebar')}
             >
               <ChevronLeft className="w-4 h-4" aria-hidden="true" />
             </button>
@@ -163,7 +165,7 @@ export function Sidebar() {
         <button
           onClick={toggleSidebar}
           className="fixed left-64 top-4 z-20 p-1.5 rounded-lg bg-surface-900 border border-surface-700 text-surface-400 hover:text-surface-100 hover:bg-surface-800 transition-colors lg:hidden"
-          aria-label="Toggle sidebar"
+          aria-label={t('Toggle sidebar')}
           style={{ transform: sidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }}
         >
           <ChevronLeft className="w-5 h-5" aria-hidden="true" />

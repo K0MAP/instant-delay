@@ -151,7 +151,7 @@ pub const STREAMDECK_MANIFEST: &str = r#"{
   "version": "1.0.0",
   "author": "InstantDelay",
   "icon": "icon.png",
-  "url": "https://instant-delay.com/streamdeck",
+  "url": "https://github.com/K0MAP/instant-delay",
   "actions": [
     {
       "name": "Toggle Delay",

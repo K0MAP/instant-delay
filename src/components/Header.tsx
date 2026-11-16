@@ -1,6 +1,7 @@
 import { useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
-import { Menu, X, Bell, HelpCircle, Sun, Moon, Github, ExternalLink } from 'lucide-react';
+import { Menu, X, Bell, Sun, Moon, Github } from 'lucide-react';
+import { useTranslation } from '../i18n';
 import { useStore, useNotifications, useServerRunning } from '../store/useStore';
 import { useTheme } from '../hooks/useTheme';
 import clsx from 'clsx';
@@ -14,6 +15,7 @@ const pageTitles: Record<string, { title: string; description: string }> = {
 };
 
 export function Header() {
+  const { t, language, setLanguage } = useTranslation();
   const location = useLocation();
   const { sidebarOpen, toggleSidebar, removeNotification, clearNotifications } = useStore();
   const notifications = useNotifications();
@@ -50,14 +52,14 @@ export function Header() {
         <button
           onClick={toggleSidebar}
           className="lg:hidden p-2 rounded-lg text-surface-400 hover:text-surface-100 hover:bg-surface-800 transition-colors"
-          aria-label={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+          aria-label={sidebarOpen ? t('Close sidebar') : t('Open sidebar')}
         >
           {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
         </button>
 
         <div className="hidden sm:block">
-          <h1 className="text-lg font-semibold text-surface-50">{pageInfo.title}</h1>
-          <p className="text-xs text-surface-500">{pageInfo.description}</p>
+          <h1 className="text-lg font-semibold text-surface-50">{t(pageInfo.title)}</h1>
+          <p className="text-xs text-surface-500">{t(pageInfo.description)}</p>
         </div>
       </div>
 
@@ -70,9 +72,19 @@ export function Header() {
             serverRunning ? 'bg-green-500' : 'bg-surface-500'
           )} aria-hidden="true" />
           <span className="text-sm font-medium text-surface-300">
-            {serverRunning ? 'Server Running' : 'Server Stopped'}
+            {serverRunning ? t('Server Running') : t('Server Stopped')}
           </span>
         </div>
+
+        <select
+          aria-label={t('Language')}
+          value={language}
+          onChange={(event) => setLanguage(event.target.value as 'en' | 'uk')}
+          className="bg-surface-800 border border-surface-700 rounded-lg px-2 py-1.5 text-xs text-surface-200"
+        >
+          <option value="en">EN</option>
+          <option value="uk">UA</option>
+        </select>
 
         {/* Notifications */}
         <div className="relative" ref={notificationRef}>
@@ -82,7 +94,7 @@ export function Header() {
               'relative p-2 rounded-lg text-surface-400 hover:text-surface-100 hover:bg-surface-800 transition-colors',
               unreadCount > 0 && 'text-primary-500'
             )}
-            aria-label={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+            aria-label={`${t('Notifications')}${unreadCount > 0 ? `, ${unreadCount} ${language === 'uk' ? 'непрочитаних' : 'unread'}` : ''}`}
             aria-expanded={showNotifications}
           >
             <Bell className="w-5 h-5" aria-hidden="true" />
@@ -96,20 +108,20 @@ export function Header() {
           {showNotifications && (
             <div className="absolute right-0 mt-2 w-80 md:w-96 dropdown-menu shadow-xl border border-surface-700 animate-in">
               <div className="flex items-center justify-between p-3 border-b border-surface-800">
-                <h3 className="font-semibold text-surface-50">Notifications</h3>
+                <h3 className="font-semibold text-surface-50">{t('Notifications')}</h3>
                 <div className="flex items-center gap-2">
                   {notifications.length > 0 && (
                     <button
                       onClick={clearNotifications}
                       className="text-xs text-surface-400 hover:text-surface-200"
                     >
-                      Clear all
+                      {t('Clear all')}
                     </button>
                   )}
                   <button
                     onClick={() => setShowNotifications(false)}
                     className="p-1 text-surface-400 hover:text-surface-200"
-                    aria-label="Close notifications"
+                    aria-label={t('Close notifications')}
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -120,7 +132,7 @@ export function Header() {
                 {notifications.length === 0 ? (
                   <div className="p-6 text-center text-surface-500">
                     <Bell className="w-8 h-8 mx-auto mb-2 text-surface-600" />
-                    <p className="text-sm">No notifications</p>
+                    <p className="text-sm">{t('No notifications')}</p>
                   </div>
                 ) : (
                   <ul className="divide-y divide-surface-800">
@@ -135,9 +147,9 @@ export function Header() {
                             notification.type === 'info' && 'bg-blue-500'
                           )} />
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-surface-50">{notification.title}</p>
+                            <p className="text-sm font-medium text-surface-50">{t(notification.title)}</p>
                             {notification.message && (
-                              <p className="text-xs text-surface-400 mt-0.5">{notification.message}</p>
+                              <p className="text-xs text-surface-400 mt-0.5">{t(notification.message)}</p>
                             )}
                             <p className="text-xs text-surface-500 mt-1">
                               {new Date(notification.timestamp).toLocaleTimeString()}
@@ -146,7 +158,7 @@ export function Header() {
                           <button
                             onClick={() => removeNotification(notification.id)}
                             className="p-1 text-surface-500 hover:text-surface-200"
-                            aria-label="Dismiss"
+                            aria-label={t('Dismiss')}
                           >
                             <X className="w-3 h-3" />
                           </button>
@@ -164,7 +176,7 @@ export function Header() {
         <button
           onClick={toggleTheme}
           className="p-2 rounded-lg text-surface-400 hover:text-surface-100 hover:bg-surface-800 transition-colors"
-          aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          aria-label={t(`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`)}
         >
           {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
         </button>
@@ -174,13 +186,13 @@ export function Header() {
           <button
             onClick={() => setShowUserMenu(!showUserMenu)}
             className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-surface-800 transition-colors"
-            aria-label="User menu"
+            aria-label={t('User menu')}
             aria-expanded={showUserMenu}
           >
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center">
               <span className="text-white font-medium text-sm">ID</span>
             </div>
-            <span className="hidden md:block text-sm font-medium text-surface-300">Streamer</span>
+            <span className="hidden md:block text-sm font-medium text-surface-300">{t('Streamer')}</span>
           </button>
 
           {showUserMenu && (
@@ -192,41 +204,19 @@ export function Header() {
               <ul className="py-1">
                 <li>
                   <a
-                    href="https://github.com/yourname/instant-delay"
+                    href="https://github.com/K0MAP/instant-delay"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="dropdown-item"
                   >
                     <Github className="w-4 h-4" />
-                    GitHub Repository
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="https://instant-delay.com/docs"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="dropdown-item"
-                  >
-                    <HelpCircle className="w-4 h-4" />
-                    Documentation
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="https://instant-delay.com"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="dropdown-item"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    Website
+                    {t('GitHub Repository')}
                   </a>
                 </li>
                 <li><hr className="dropdown-divider" /></li>
                 <li>
                   <button className="dropdown-item dropdown-item-danger w-full text-left">
-                    Quit Application
+                    {t('Quit Application')}
                   </button>
                 </li>
               </ul>

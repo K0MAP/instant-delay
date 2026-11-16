@@ -21,8 +21,10 @@ import { useSettings, useHotkeys, useSystem, useNotifications } from '../hooks/u
 import { useTheme } from '../hooks/useTheme';
 import type { Settings as SettingsType, HotkeyConfig } from '../types';
 import clsx from 'clsx';
+import { useTranslation } from '../i18n';
 
 export function Settings() {
+  const { t, language, setLanguage } = useTranslation();
   const { settings, updateSettings } = useSettings();
   const { hotkeys, updateHotkeyConfig } = useHotkeys();
   const { getSystemInfo, systemInfo } = useSystem();
@@ -97,8 +99,8 @@ export function Settings() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-surface-50">Settings</h2>
-          <p className="text-surface-400 text-sm mt-1">Configure InstantDelay to match your workflow</p>
+          <h2 className="text-2xl font-bold text-surface-50">{t('Settings')}</h2>
+          <p className="text-surface-400 text-sm mt-1">{t('Configure InstantDelay to match your workflow')}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -106,7 +108,7 @@ export function Settings() {
             className="btn-secondary flex items-center gap-2 text-sm"
           >
             <ExternalLink className="w-3 h-3" />
-            Open Config Folder
+            {t('Open Config Folder')}
           </button>
           <button
             onClick={() => { setSaving(true); handleSave(settings || {} as SettingsType); }}
@@ -114,7 +116,7 @@ export function Settings() {
             disabled={saving || !settings}
           >
             <Save className="w-4 h-4" />
-            {saving ? 'Saving...' : 'Save All'}
+            {saving ? t('Saving...') : t('Save All')}
           </button>
         </div>
       </div>
@@ -122,7 +124,7 @@ export function Settings() {
       {/* Tab Navigation */}
       <div className="card overflow-hidden">
         <div className="border-b border-surface-800">
-          <nav className="flex overflow-x-auto" aria-label="Settings tabs">
+          <nav className="flex overflow-x-auto" aria-label={t('Settings tabs')}>
             {tabs.map((tab) => {
               const Icon = tab.icon;
               return (
@@ -139,7 +141,7 @@ export function Settings() {
                   aria-selected={activeTab === tab.id}
                 >
                   <Icon className="w-4 h-4" aria-hidden="true" />
-                  {tab.label}
+                  {t(tab.label)}
                 </button>
               );
             })}
@@ -151,10 +153,10 @@ export function Settings() {
           {/* General Tab */}
           {activeTab === 'general' && settings && (
             <div className="settings-section">
-              <h3 className="settings-group-title">Application</h3>
+              <h3 className="settings-group-title">{t('Application')}</h3>
               <div className="settings-group space-y-4">
                 <div>
-                  <label className="label">Theme</label>
+                  <label className="label">{t('Theme')}</label>
                   <div className="flex gap-2">
                     {(['dark', 'light', 'system'] as const).map((t) => (
                       <button
@@ -170,16 +172,29 @@ export function Settings() {
                         {t === 'dark' && <Moon className="w-4 h-4" />}
                         {t === 'light' && <Sun className="w-4 h-4" />}
                         {t === 'system' && <Monitor className="w-4 h-4" />}
-                        {t.charAt(0).toUpperCase() + t.slice(1)}
+                        {language === 'uk' ? (t === 'dark' ? 'Темна' : t === 'light' ? 'Світла' : 'Системна') : t.charAt(0).toUpperCase() + t.slice(1)}
                       </button>
                     ))}
                   </div>
                 </div>
 
+                <div>
+                  <label className="label" htmlFor="app-language">{t('Language')}</label>
+                  <select
+                    id="app-language"
+                    value={language}
+                    onChange={(event) => setLanguage(event.target.value as 'en' | 'uk')}
+                    className="input mt-2 w-full"
+                  >
+                    <option value="en">{t('English')}</option>
+                    <option value="uk">{t('Ukrainian')}</option>
+                  </select>
+                </div>
+
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="label">Auto-start server</p>
-                    <p className="text-sm text-surface-500">Start RTMP server on application launch</p>
+                    <p className="label">{t('Auto-start server')}</p>
+                    <p className="text-sm text-surface-500">{t('Start RTMP server on application launch')}</p>
                   </div>
                   <label className="custom-switch">
                     <input
@@ -194,8 +209,8 @@ export function Settings() {
 
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="label">Minimize to tray</p>
-                    <p className="text-sm text-surface-500">Hide window to system tray on close</p>
+                    <p className="label">{t('Minimize to tray')}</p>
+                    <p className="text-sm text-surface-500">{t('Hide window to system tray on close')}</p>
                   </div>
                   <label className="custom-switch">
                     <input
@@ -210,8 +225,8 @@ export function Settings() {
 
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="label">Show notifications</p>
-                    <p className="text-sm text-surface-500">Display desktop notifications</p>
+                    <p className="label">{t('Show notifications')}</p>
+                    <p className="text-sm text-surface-500">{t('Display desktop notifications')}</p>
                   </div>
                   <label className="custom-switch">
                     <input
@@ -226,8 +241,8 @@ export function Settings() {
 
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="label">Check for updates</p>
-                    <p className="text-sm text-surface-500">Automatically check for new versions</p>
+                    <p className="label">{t('Check for updates')}</p>
+                    <p className="text-sm text-surface-500">{t('Automatically check for new versions')}</p>
                   </div>
                   <label className="custom-switch">
                     <input
@@ -746,7 +761,7 @@ export function Settings() {
                 <h3 className="text-2xl font-bold text-surface-50 mb-2">InstantDelay</h3>
                 <p className="text-surface-400 mb-1">Version 1.0.0</p>
                 <p className="text-surface-500 text-sm mt-4 max-w-md mx-auto">
-                  Professional stream delay management for OBS. Control your stream delay in real-time without restarting OBS.
+                  Experimental stream delay control for a local RTMP input and configured output destinations.
                 </p>
               </div>
 
@@ -771,15 +786,15 @@ export function Settings() {
               <div className="card p-6">
                 <h4 className="font-semibold text-surface-50 mb-4">Links</h4>
                 <div className="flex flex-wrap gap-4">
-                  <a href="https://github.com/yourname/instant-delay" target="_blank" rel="noopener noreferrer" className="btn-secondary flex items-center gap-2">
+                  <a href="https://github.com/K0MAP/instant-delay" target="_blank" rel="noopener noreferrer" className="btn-secondary flex items-center gap-2">
                     <Github className="w-4 h-4" />
                     GitHub Repository
                   </a>
-                  <a href="https://github.com/yourname/instant-delay/issues" target="_blank" rel="noopener noreferrer" className="btn-secondary flex items-center gap-2">
+                  <a href="https://github.com/K0MAP/instant-delay/issues" target="_blank" rel="noopener noreferrer" className="btn-secondary flex items-center gap-2">
                     <AlertCircle className="w-4 h-4" />
                     Report Issue
                   </a>
-                  <a href="https://github.com/yourname/instant-delay/releases" target="_blank" rel="noopener noreferrer" className="btn-secondary flex items-center gap-2">
+                  <a href="https://github.com/K0MAP/instant-delay/releases" target="_blank" rel="noopener noreferrer" className="btn-secondary flex items-center gap-2">
                     <RefreshCw className="w-4 h-4" />
                     Releases
                   </a>

@@ -1,0 +1,1 @@
+drawtext=fontfile='C\:/Windows/Fonts/consola.ttf':text='%{localtime\:%H\\:%M\\:%S}':x=20:y=20:fontsize=64:fontcolor=white:box=1:boxcolor=black@0.6

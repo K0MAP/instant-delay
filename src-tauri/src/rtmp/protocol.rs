@@ -1,12 +1,27 @@
 //! RTMP Protocol implementation
+//!
+//! The reader is stateful: RTMP messages may span several chunks and the
+//! header of a chunk may only carry the fields that changed since the previous
+//! chunk on the same chunk stream. A single [`ChunkReader`] must therefore be
+//! reused for the lifetime of a connection.
 
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use bytes::{Bytes, BytesMut, BufMut};
+use tracing::debug;
 
 pub type ChunkStreamId = u32;
-use tracing::{trace, debug};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, bail, Result};
+
+/// Default chunk size mandated by the RTMP specification.
+pub const DEFAULT_CHUNK_SIZE: u32 = 128;
+
+/// Largest chunk size we are willing to accept from a peer (16 MiB).
+pub const MAX_CHUNK_SIZE: u32 = 16 * 1024 * 1024;
+
+/// Largest single RTMP message we are willing to buffer (16 MiB).
+pub const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
 /// RTMP Chunk Header
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,11 +48,17 @@ pub enum MessageType {
     MetadataAMF3 = 15,
     Metadata = 18, // AMF0 data
     CommandAMF3 = 17,
-    CommandAMF0 = 20,
     SharedObjectAMF3 = 16,
     SharedObjectAMF0 = 19,
+    CommandAMF0 = 20,
     Aggregate = 22,
     Unknown = 255,
+}
+
+impl Default for MessageType {
+    fn default() -> Self {
+        MessageType::Unknown
+    }
 }
 
 impl From<u8> for MessageType {
@@ -86,7 +107,7 @@ pub mod csid {
 }
 
 /// Read RTMP handshake (C0/C1/C2 or S0/S1/S2)
-pub async fn read_handshake<R: tokio::io::AsyncRead + Unpin>(stream: &mut R) -> Result<HandshakeType> {
+pub async fn read_handshake<R: AsyncRead + Unpin>(stream: &mut R) -> Result<HandshakeType> {
     let mut buf = [0u8; 1537];
 
     // Read C0/S0 (1 byte)
@@ -99,19 +120,17 @@ pub async fn read_handshake<R: tokio::io::AsyncRead + Unpin>(stream: &mut R) -> 
     // Read C1/S1 (1536 bytes)
     stream.read_exact(&mut buf[1..]).await?;
 
-    // Determine if client or server based on time field
-    // Client sends timestamp in first 4 bytes, server echoes
-    let time = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
-
     // For simplicity, we'll assume we're reading client handshake
     Ok(HandshakeType::Client)
 }
 
-/// Write RTMP handshake response
-pub async fn write_handshake<W: tokio::io::AsyncWrite + Unpin>(stream: &mut W, _type: HandshakeType) -> Result<()> {
+/// Write RTMP handshake response (S0 + S1 only).
+///
+/// Prefer [`server_handshake`], which completes the full exchange.
+pub async fn write_handshake<W: AsyncWrite + Unpin>(stream: &mut W, _type: HandshakeType) -> Result<()> {
     let mut buf = [0u8; 1537];
 
-    // S0/S1/S2 or C0/C1/C2
+    // S0/S1 or C0/C1/C2
     buf[0] = 3; // Version
 
     // Time (4 bytes) - use current time
@@ -124,8 +143,8 @@ pub async fn write_handshake<W: tokio::io::AsyncWrite + Unpin>(stream: &mut W, _
     // Zero padding (4 bytes)
     buf[5..9].copy_from_slice(&[0, 0, 0, 0]);
 
-    // Random data (1528 bytes) - simplified to zeros
-    // In production, use proper random data
+    // Random data (1528 bytes)
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut buf[9..]);
 
     stream.write_all(&buf).await?;
     stream.flush().await?;
@@ -133,134 +152,469 @@ pub async fn write_handshake<W: tokio::io::AsyncWrite + Unpin>(stream: &mut W, _
     Ok(())
 }
 
-/// Read a chunk from stream
-pub async fn read_chunk<R: tokio::io::AsyncRead + Unpin>(stream: &mut R) -> Result<RtmpMessage> {
-    // Read basic header (1-3 bytes)
-    let mut basic_header = [0u8; 3];
-    stream.read_exact(&mut basic_header[0..1]).await?;
+/// Perform the complete server side handshake: read C0/C1, send S0/S1,
+/// read C2 and echo C1 as S2.
+///
+/// Supports both "simple handshake" (S1 echoes C1) and "complex handshake"
+/// (S1 has fresh random data). Detects which variant the client expects
+/// by examining C1: if bytes 5-8 (the second timestamp field) are non-zero,
+/// the client is using simple handshake (like ffmpeg).
+///
+/// For simple handshake, some clients (notably ffmpeg) expect the server to
+/// send S0+S1+S2 as a single response (since S1=S2=C1 are both known),
+/// then the client responds with C2. We send S0+S1+S2 together for simple
+/// handshake, then read C2.
+pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<()> {
+    let mut c0c1 = [0u8; 1537];
+    debug!("Reading C0+C1 (1537 bytes)...");
+    stream.read_exact(&mut c0c1).await?;
+    debug!("Read C0+C1: version={}, C1 first 16 bytes={:02x?}", c0c1[0], &c0c1[1..17]);
 
-    let fmt = (basic_header[0] >> 6) & 0x03;
-    let mut csid = (basic_header[0] & 0x3F) as u32;
-
-    if csid == 0 {
-        // 2-byte CSID
-        stream.read_exact(&mut basic_header[1..2]).await?;
-        csid = 64 + basic_header[1] as u32;
-    } else if csid == 1 {
-        // 3-byte CSID
-        stream.read_exact(&mut basic_header[1..3]).await?;
-        csid = 64 + (basic_header[2] as u32) + ((basic_header[1] as u32) << 8);
+    if c0c1[0] != 3 {
+        bail!("Unsupported RTMP version: {}", c0c1[0]);
     }
 
-    // Read message header based on fmt
-    let (timestamp, msg_length, msg_type, msg_stream_id) = match fmt {
-        0 => {
-            // 11 bytes: timestamp(3) + length(3) + type(1) + stream_id(4)
-            let mut hdr = [0u8; 11];
-            stream.read_exact(&mut hdr).await?;
-            let timestamp = u32::from_be_bytes([0, hdr[0], hdr[1], hdr[2]]);
-            let msg_length = u32::from_be_bytes([0, hdr[3], hdr[4], hdr[5]]);
-            let msg_type = MessageType::from(hdr[6]);
-            let msg_stream_id = u32::from_le_bytes([hdr[7], hdr[8], hdr[9], hdr[10]]);
-            (timestamp, msg_length, msg_type, msg_stream_id)
-        }
-        1 => {
-            // 7 bytes: timestamp_delta(3) + length(3) + type(1)
-            let mut hdr = [0u8; 7];
-            stream.read_exact(&mut hdr).await?;
-            let timestamp_delta = u32::from_be_bytes([0, hdr[0], hdr[1], hdr[2]]);
-            let msg_length = u32::from_be_bytes([0, hdr[3], hdr[4], hdr[5]]);
-            let msg_type = MessageType::from(hdr[6]);
-            (timestamp_delta, msg_length, msg_type, 0) // stream_id same as previous
-        }
-        2 => {
-            // 3 bytes: timestamp_delta(3)
-            let mut hdr = [0u8; 3];
-            stream.read_exact(&mut hdr).await?;
-            let timestamp_delta = u32::from_be_bytes([0, hdr[0], hdr[1], hdr[2]]);
-            (timestamp_delta, 0, MessageType::Unknown, 0) // length and type same as previous
-        }
-        3 => {
-            // 0 bytes: all same as previous
-            (0, 0, MessageType::Unknown, 0)
-        }
-        _ => return Err(anyhow!("Invalid fmt: {}", fmt)),
-    };
+    // Detect handshake type by examining C1 structure:
+    // Complex handshake C1: timestamp(4) + zero(4) + random(1528)
+    // Simple handshake C1:  timestamp(4) + random(1532) -- no zero field
+    // ffmpeg and some other clients send non-zero in bytes 5-8, indicating simple handshake.
+    let c1_time = u32::from_be_bytes([c0c1[1], c0c1[2], c0c1[3], c0c1[4]]);
+    let c1_time2 = u32::from_be_bytes([c0c1[5], c0c1[6], c0c1[7], c0c1[8]]);
+    debug!("C1 time={}, time2={}", c1_time, c1_time2);
 
-    // Read extended timestamp if needed
-    let final_timestamp = if timestamp >= 0xFFFFFF {
-        let mut ext = [0u8; 4];
-        stream.read_exact(&mut ext).await?;
-        u32::from_be_bytes(ext)
+    // If second 4 bytes are non-zero, client expects simple handshake
+    let use_simple_handshake = c1_time2 != 0;
+    debug!("Handshake type: {}", if use_simple_handshake { "simple (S1=C1)" } else { "complex (fresh S1)" });
+
+    if use_simple_handshake {
+        // Simple handshake: S0 + S1 + S2 all together (S1=S2=C1)
+        debug!("Using simple handshake: sending S0+S1+S2 (S1=S2=C1)");
+        let mut s0s1s2 = [0u8; 1537 + 1536];
+        s0s1s2[0] = 3; // S0
+        s0s1s2[1..1537].copy_from_slice(&c0c1[1..]); // S1 = C1
+        s0s1s2[1537..].copy_from_slice(&c0c1[1..]);   // S2 = C1
+
+        debug!("Writing S0+S1+S2 ({} bytes), S0={}, S1 first 16={:02x?}", s0s1s2.len(), s0s1s2[0], &s0s1s2[1..17]);
+        stream.write_all(&s0s1s2).await?;
+        stream.flush().await?;
+
+        // C2 completes the exchange (should equal S1 = C1)
+        let mut c2 = [0u8; 1536];
+        debug!("Reading C2 (1536 bytes)...");
+        stream.read_exact(&mut c2).await?;
+        debug!("Read C2: first 16 bytes={:02x?}", &c2[..16]);
     } else {
-        timestamp
-    };
+        // Complex handshake: standard 3-step
+        let mut s0s1 = [0u8; 1537];
+        s0s1[0] = 3;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u32;
+        s0s1[1..5].copy_from_slice(&now.to_be_bytes());
+        s0s1[5..9].copy_from_slice(&[0, 0, 0, 0]);
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut s0s1[9..]);
 
-    // Read payload
-    let mut payload = BytesMut::with_capacity(msg_length as usize);
-    payload.resize(msg_length as usize, 0);
-    stream.read_exact(&mut payload).await?;
+        debug!("Writing S0+S1 (1537 bytes), S0={}, S1 first 16={:02x?}", s0s1[0], &s0s1[1..17]);
+        stream.write_all(&s0s1).await?;
+        stream.flush().await?;
 
-    Ok(RtmpMessage {
-        header: ChunkHeader {
-            chunk_stream_id: csid,
-            timestamp: final_timestamp,
-            message_length: msg_length,
-            message_type: msg_type,
-            message_stream_id: msg_stream_id,
-        },
-        payload: payload.freeze(),
-    })
+        // C2 completes the exchange; should be a copy of S1.
+        let mut c2 = [0u8; 1536];
+        debug!("Reading C2 (1536 bytes)...");
+        stream.read_exact(&mut c2).await?;
+        debug!("Read C2: first 16 bytes={:02x?}", &c2[..16]);
+
+        // S2 echoes C1.
+        debug!("Writing S2 (echo of C1, 1536 bytes)...");
+        stream.write_all(&c0c1[1..]).await?;
+        stream.flush().await?;
+    }
+
+    Ok(())
 }
 
-/// Write a chunk to stream
-pub async fn write_chunk<W: tokio::io::AsyncWrite + Unpin>(stream: &mut W, message: &RtmpMessage) -> Result<()> {
-    let chunk_size = 128; // Default chunk size
-    let payload = &message.payload;
-    let total_len = payload.len();
-    let mut sent = 0;
-    let mut first = true;
+/// Per-chunk-stream state used for reassembly.
+#[derive(Debug, Default)]
+struct ChunkStreamState {
+    timestamp: u32,
+    delta: u32,
+    message_length: u32,
+    message_type: MessageType,
+    message_stream_id: u32,
+    extended_timestamp: bool,
+    started: bool,
+    remaining: u32,
+    payload: BytesMut,
+}
 
-    while sent < total_len {
-        let remaining = total_len - sent;
-        let chunk_data_len = std::cmp::min(chunk_size, remaining);
+impl ChunkStreamState {
+    fn begin_message(&mut self) {
+        self.payload.clear();
+        self.remaining = self.message_length;
+        self.started = true;
+    }
+}
 
-        // Write basic header
-        let csid = message.header.chunk_stream_id;
-        if csid <= 63 {
-            stream.write_all(&[(0 << 6) | (csid as u8)]).await?;
-        } else if csid <= 319 {
-            stream.write_all(&[0x00, (csid - 64) as u8]).await?;
-        } else {
-            stream.write_all(&[0x01, ((csid - 64) >> 8) as u8, (csid - 64) as u8]).await?;
+/// Stateful RTMP chunk reader.
+pub struct ChunkReader {
+    chunk_size: u32,
+    max_message_size: u32,
+    streams: HashMap<ChunkStreamId, ChunkStreamState>,
+}
+
+impl Default for ChunkReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ChunkReader {
+    pub fn new() -> Self {
+        Self {
+            chunk_size: DEFAULT_CHUNK_SIZE,
+            max_message_size: MAX_MESSAGE_SIZE,
+            streams: HashMap::new(),
         }
+    }
 
-        // Write message header (fmt 0 for first chunk, fmt 3 for continuation)
-        if first {
-            let timestamp = message.header.timestamp.min(0xFFFFFF);
-            let mut hdr = [0u8; 11];
-            hdr[0..3].copy_from_slice(&(timestamp as u32).to_be_bytes()[1..]);
-            hdr[3..6].copy_from_slice(&(message.header.message_length as u32).to_be_bytes()[1..]);
-            hdr[6] = message.header.message_type as u8;
-            hdr[7..11].copy_from_slice(&message.header.message_stream_id.to_le_bytes());
-            stream.write_all(&hdr).await?;
+    /// Override the maximum message size accepted from the peer.
+    pub fn with_max_message_size(mut self, size: u32) -> Self {
+        self.max_message_size = size.max(1);
+        self
+    }
 
-            if timestamp >= 0xFFFFFF {
+    pub fn chunk_size(&self) -> u32 {
+        self.chunk_size
+    }
+
+    /// Read one complete RTMP message, reassembling chunks as needed.
+    ///
+    /// Protocol control messages are applied to the reader's own state
+    /// (chunk size, abort) before they are returned to the caller.
+    pub async fn read_message<R: AsyncRead + Unpin>(&mut self, stream: &mut R) -> Result<RtmpMessage> {
+        loop {
+            let (fmt, csid) = read_basic_header(stream).await?;
+            let chunk_size = self.chunk_size;
+            let max_message_size = self.max_message_size;
+
+            let completed = {
+                let state = self.streams.entry(csid).or_default();
+                let continuing = state.started && state.remaining > 0;
+
+                match fmt {
+                    // Type 0: full header, 11 bytes.
+                    0 => {
+                        let timestamp = read_u24_async(stream).await?;
+                        let message_length = read_u24_async(stream).await?;
+                        let mut type_buf = [0u8; 1];
+                        stream.read_exact(&mut type_buf).await?;
+                        let mut sid_buf = [0u8; 4];
+                        stream.read_exact(&mut sid_buf).await?;
+
+                        if message_length > max_message_size {
+                            bail!(
+                                "RTMP message too large: {} bytes (limit {})",
+                                message_length,
+                                max_message_size
+                            );
+                        }
+
+                        state.message_length = message_length;
+                        state.message_type = MessageType::from(type_buf[0]);
+                        state.message_stream_id = u32::from_le_bytes(sid_buf);
+                        state.extended_timestamp = timestamp == 0xFFFFFF;
+                        let ext = if state.extended_timestamp {
+                            Some(read_u32_async(stream).await?)
+                        } else {
+                            None
+                        };
+                        state.delta = 0;
+                        state.timestamp = ext.unwrap_or(timestamp);
+                        state.begin_message();
+                    }
+                    // Type 1: timestamp delta + length + type, 7 bytes.
+                    1 => {
+                        let timestamp_delta = read_u24_async(stream).await?;
+                        let message_length = read_u24_async(stream).await?;
+                        let mut type_buf = [0u8; 1];
+                        stream.read_exact(&mut type_buf).await?;
+
+                        if message_length > max_message_size {
+                            bail!(
+                                "RTMP message too large: {} bytes (limit {})",
+                                message_length,
+                                max_message_size
+                            );
+                        }
+
+                        state.message_length = message_length;
+                        state.message_type = MessageType::from(type_buf[0]);
+                        state.extended_timestamp = timestamp_delta == 0xFFFFFF;
+                        let ext = if state.extended_timestamp {
+                            Some(read_u32_async(stream).await?)
+                        } else {
+                            None
+                        };
+                        let delta = ext.unwrap_or(timestamp_delta);
+                        state.delta = delta;
+                        state.timestamp = state.timestamp.wrapping_add(delta);
+                        state.begin_message();
+                    }
+                    // Type 2: timestamp delta only, 3 bytes.
+                    2 => {
+                        let timestamp_delta = read_u24_async(stream).await?;
+                        state.extended_timestamp = timestamp_delta == 0xFFFFFF;
+                        let ext = if state.extended_timestamp {
+                            Some(read_u32_async(stream).await?)
+                        } else {
+                            None
+                        };
+                        let delta = ext.unwrap_or(timestamp_delta);
+                        state.delta = delta;
+                        state.timestamp = state.timestamp.wrapping_add(delta);
+                        state.begin_message();
+                    }
+                    // Type 3: no message header.
+                    3 => {
+                        let ext = if state.extended_timestamp {
+                            Some(read_u32_async(stream).await?)
+                        } else {
+                            None
+                        };
+                        if !continuing {
+                            // First chunk of a new message: the previous delta repeats.
+                            let delta = ext.unwrap_or(state.delta);
+                            if state.extended_timestamp {
+                                state.delta = delta;
+                            }
+                            state.timestamp = state.timestamp.wrapping_add(delta);
+                            state.begin_message();
+                        }
+                    }
+                    _ => unreachable!("fmt is two bits"),
+                }
+
+                let to_read = chunk_size.min(state.remaining) as usize;
+                if to_read > 0 {
+                    let start = state.payload.len();
+                    state.payload.resize(start + to_read, 0);
+                    stream.read_exact(&mut state.payload[start..]).await?;
+                    state.remaining -= to_read as u32;
+                }
+
+                if state.remaining == 0 {
+                    Some(RtmpMessage {
+                        header: ChunkHeader {
+                            chunk_stream_id: csid,
+                            timestamp: state.timestamp,
+                            message_length: state.message_length,
+                            message_type: state.message_type,
+                            message_stream_id: state.message_stream_id,
+                        },
+                        payload: std::mem::take(&mut state.payload).freeze(),
+                    })
+                } else {
+                    None
+                }
+            };
+
+            if let Some(message) = completed {
+                match message.header.message_type {
+                    MessageType::SetChunkSize => {
+                        if message.payload.len() >= 4 {
+                            let size = u32::from_be_bytes([
+                                message.payload[0],
+                                message.payload[1],
+                                message.payload[2],
+                                message.payload[3],
+                            ]);
+                            if size == 0 || size > MAX_CHUNK_SIZE {
+                                bail!("Peer announced invalid chunk size: {}", size);
+                            }
+                            self.chunk_size = size;
+                        }
+                    }
+                    MessageType::Abort => {
+                        if message.payload.len() >= 4 {
+                            let aborted = u32::from_be_bytes([
+                                message.payload[0],
+                                message.payload[1],
+                                message.payload[2],
+                                message.payload[3],
+                            ]);
+                            if let Some(state) = self.streams.get_mut(&aborted) {
+                                state.payload.clear();
+                                state.remaining = 0;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                return Ok(message);
+            }
+        }
+    }
+}
+
+/// Write a chunk to stream (single message, default chunk size).
+///
+/// Prefer a reusable [`ChunkWriter`] if a non-default chunk size is used.
+pub async fn write_chunk<W: AsyncWrite + Unpin>(stream: &mut W, message: &RtmpMessage) -> Result<()> {
+    ChunkWriter::new().write_message(stream, message).await
+}
+
+/// Read a chunk from stream.
+///
+/// This creates a fresh reader for every call, so it cannot decode compressed
+/// headers (fmt 1-3) that refer to an earlier message. Use [`ChunkReader`] for
+/// real connections; this helper exists for tests and one-shot messages.
+pub async fn read_chunk<R: AsyncRead + Unpin>(stream: &mut R) -> Result<RtmpMessage> {
+    ChunkReader::new().read_message(stream).await
+}
+
+/// Stateful RTMP chunk writer.
+pub struct ChunkWriter {
+    chunk_size: u32,
+}
+
+impl Default for ChunkWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ChunkWriter {
+    pub fn new() -> Self {
+        Self {
+            chunk_size: DEFAULT_CHUNK_SIZE,
+        }
+    }
+
+    pub fn with_chunk_size(chunk_size: u32) -> Self {
+        Self {
+            chunk_size: chunk_size.max(1),
+        }
+    }
+
+    pub fn set_chunk_size(&mut self, chunk_size: u32) {
+        self.chunk_size = chunk_size.max(1);
+    }
+
+    pub fn chunk_size(&self) -> u32 {
+        self.chunk_size
+    }
+
+    /// Write a complete message, splitting it into chunks as required.
+    pub async fn write_message<W: AsyncWrite + Unpin>(
+        &self,
+        stream: &mut W,
+        message: &RtmpMessage,
+    ) -> Result<()> {
+        let payload = &message.payload;
+        let total_len = payload.len();
+        let timestamp = message.header.timestamp;
+        let use_extended = timestamp >= 0xFFFFFF;
+        let mut sent = 0usize;
+        let mut first = true;
+
+        loop {
+            let remaining = total_len - sent;
+            let chunk_data_len = std::cmp::min(self.chunk_size as usize, remaining);
+
+            // Basic header
+            let fmt: u8 = if first { 0 } else { 3 };
+            write_basic_header(stream, fmt, message.header.chunk_stream_id).await?;
+
+            if first {
+                // Message header (fmt 0): timestamp, length, type, stream id.
+                let wire_ts = if use_extended { 0xFFFFFF } else { timestamp };
+                write_u24_async(stream, wire_ts).await?;
+                write_u24_async(stream, total_len as u32).await?;
+                stream.write_all(&[message.header.message_type as u8]).await?;
+                stream
+                    .write_all(&message.header.message_stream_id.to_le_bytes())
+                    .await?;
+                if use_extended {
+                    stream.write_all(&timestamp.to_be_bytes()).await?;
+                }
+                first = false;
+            } else if use_extended {
+                // Extended timestamp is repeated on every chunk of the message.
                 stream.write_all(&timestamp.to_be_bytes()).await?;
             }
 
-            first = false;
-        } else {
-            // fmt 3 - no header
-            stream.write_all(&[(3 << 6) | (csid as u8 & 0x3F)]).await?;
+            stream.write_all(&payload[sent..sent + chunk_data_len]).await?;
+            sent += chunk_data_len;
+
+            if sent >= total_len {
+                break;
+            }
         }
 
-        // Write chunk data
-        stream.write_all(&payload[sent..sent + chunk_data_len]).await?;
-        sent += chunk_data_len;
+        stream.flush().await?;
+        Ok(())
     }
+}
 
-    stream.flush().await?;
+async fn read_basic_header<R: AsyncRead + Unpin>(stream: &mut R) -> Result<(u8, ChunkStreamId)> {
+    let mut byte = [0u8; 1];
+    stream.read_exact(&mut byte).await?;
+    let fmt = (byte[0] >> 6) & 0x03;
+    let csid = match byte[0] & 0x3F {
+        0 => {
+            let mut b = [0u8; 1];
+            stream.read_exact(&mut b).await?;
+            64 + b[0] as u32
+        }
+        1 => {
+            let mut b = [0u8; 2];
+            stream.read_exact(&mut b).await?;
+            64 + b[0] as u32 + ((b[1] as u32) << 8)
+        }
+        n => n as u32,
+    };
+    Ok((fmt, csid))
+}
+
+async fn write_basic_header<W: AsyncWrite + Unpin>(
+    stream: &mut W,
+    fmt: u8,
+    csid: ChunkStreamId,
+) -> Result<()> {
+    let fmt_bits = (fmt & 0x03) << 6;
+    if csid < 64 {
+        stream.write_all(&[fmt_bits | csid as u8]).await?;
+    } else if csid < 320 {
+        stream
+            .write_all(&[fmt_bits, (csid - 64) as u8])
+            .await?;
+    } else {
+        let value = csid - 64;
+        stream
+            .write_all(&[fmt_bits | 0x01, (value >> 8) as u8, value as u8])
+            .await?;
+    }
+    Ok(())
+}
+
+async fn read_u24_async<R: AsyncRead + Unpin>(stream: &mut R) -> Result<u32> {
+    let mut b = [0u8; 3];
+    stream.read_exact(&mut b).await?;
+    Ok(((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32)
+}
+
+async fn read_u32_async<R: AsyncRead + Unpin>(stream: &mut R) -> Result<u32> {
+    let mut b = [0u8; 4];
+    stream.read_exact(&mut b).await?;
+    Ok(u32::from_be_bytes(b))
+}
+
+async fn write_u24_async<W: AsyncWrite + Unpin>(stream: &mut W, value: u32) -> Result<()> {
+    stream
+        .write_all(&[(value >> 16) as u8, (value >> 8) as u8, value as u8])
+        .await?;
     Ok(())
 }
 
@@ -306,7 +660,7 @@ pub fn write_u32_be(buf: &mut BytesMut, val: u32) {
 
 /// AMF0 encoding helpers
 pub mod amf0 {
-    use bytes::{BytesMut, BufMut};
+    use bytes::{Bytes, BytesMut, BufMut};
     use anyhow::Result;
 
     pub const NUMBER: u8 = 0x00;
@@ -323,6 +677,13 @@ pub mod amf0 {
 
     pub fn write_string(buf: &mut BytesMut, s: &str) {
         buf.put_u8(STRING);
+        let bytes = s.as_bytes();
+        buf.put_u16(bytes.len() as u16);
+        buf.put_slice(bytes);
+    }
+
+    /// Object keys are a bare u16 length followed by the bytes (no type marker).
+    pub fn write_object_key(buf: &mut BytesMut, s: &str) {
         let bytes = s.as_bytes();
         buf.put_u16(bytes.len() as u16);
         buf.put_slice(bytes);
@@ -380,23 +741,31 @@ pub mod amf0 {
     /// Write connect command with standard parameters
     pub fn write_connect_command(buf: &mut BytesMut, app: &str, tc_url: &str) {
         write_command(buf, "connect", 1.0, Some(&|buf| {
-            // Command object with connection parameters
-            write_string(buf, "app");
+            // Command object: AMF0 object property names are length-prefixed
+            // without a type marker, unlike string values.
+            write_object_key(buf, "app");
             write_string(buf, app);
 
-            write_string(buf, "tcUrl");
+            write_object_key(buf, "tcUrl");
             write_string(buf, tc_url);
 
-            write_string(buf, "type");
+            write_object_key(buf, "type");
             write_string(buf, "nonprivate");
 
-            write_string(buf, "flashVer");
+            write_object_key(buf, "flashVer");
             write_string(buf, "FMLE/3.0 (compatible; InstantDelay)");
 
-            write_number(buf, 250.0); // audioCodecs
-            write_number(buf, 252.0); // videoCodecs
-            write_number(buf, 3.0);   // videoFunction
-            write_number(buf, 3575.0); // capabilities
+            write_object_key(buf, "audioCodecs");
+            write_number(buf, 250.0);
+            write_object_key(buf, "videoCodecs");
+            write_number(buf, 252.0);
+            write_object_key(buf, "videoFunction");
+            write_number(buf, 3.0);
+            write_object_key(buf, "capabilities");
+            write_number(buf, 3575.0);
+
+            write_object_key(buf, "objectEncoding");
+            write_number(buf, 0.0);
         }));
     }
 
@@ -405,18 +774,147 @@ pub mod amf0 {
         write_command(buf, "createStream", 2.0, None);
     }
 
-    /// Write publish command
+    /// Write publish command. The stream name and publish type are positional
+    /// arguments, not properties of a command object.
     pub fn write_publish_command(buf: &mut BytesMut, stream_name: &str, publish_type: &str) {
-        write_command(buf, "publish", 3.0, Some(&|buf| {
-            write_string(buf, stream_name);
-            write_string(buf, publish_type); // "live", "record", "append"
-        }));
+        write_command(buf, "publish", 0.0, None);
+        write_string(buf, stream_name);
+        write_string(buf, publish_type); // "live", "record", "append"
     }
 
     /// Write setChunkSize command
     pub fn write_set_chunk_size(buf: &mut BytesMut, size: u32) {
         // This is a protocol control message, not a command
         // Handled separately
+    }
+
+    /// Read an AMF0 string (type marker + u16 length + bytes).
+    pub fn read_string(payload: &[u8], pos: &mut usize) -> Option<String> {
+        if *pos >= payload.len() || payload[*pos] != STRING {
+            return None;
+        }
+        *pos += 1;
+        if *pos + 2 > payload.len() {
+            return None;
+        }
+        let len = u16::from_be_bytes([payload[*pos], payload[*pos + 1]]) as usize;
+        *pos += 2;
+        if *pos + len > payload.len() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&payload[*pos..*pos + len]).into_owned();
+        *pos += len;
+        Some(s)
+    }
+
+    /// Read an AMF0 number (type marker + f64).
+    pub fn read_number(payload: &[u8], pos: &mut usize) -> Option<f64> {
+        if *pos >= payload.len() || payload[*pos] != NUMBER {
+            return None;
+        }
+        *pos += 1;
+        if *pos + 8 > payload.len() {
+            return None;
+        }
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&payload[*pos..*pos + 8]);
+        *pos += 8;
+        Some(f64::from_be_bytes(bytes))
+    }
+
+    /// Parse the command name and transaction id at the start of a command.
+    pub fn read_command(payload: &[u8]) -> Option<(String, f64)> {
+        let mut pos = 0usize;
+        let name = read_string(payload, &mut pos)?;
+        let transaction_id = read_number(payload, &mut pos).unwrap_or(0.0);
+        Some((name, transaction_id))
+    }
+
+    /// Extract a named string property from the first AMF0 object in a payload.
+    pub fn find_string_property(payload: &[u8], key: &str) -> Option<String> {
+        let mut i = 0usize;
+        while i + 2 <= payload.len() {
+            // Object keys are length-prefixed; scan for a key match.
+            let len = u16::from_be_bytes([payload[i], payload[i + 1]]) as usize;
+            if len == key.len() && i + 2 + len <= payload.len()
+                && &payload[i + 2..i + 2 + len] == key.as_bytes()
+            {
+                let mut pos = i + 2 + len;
+                if pos < payload.len() {
+                    match payload[pos] {
+                        STRING => return read_string(payload, &mut pos),
+                        _ => return None,
+                    }
+                }
+                return None;
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Build the `_result` payload for `connect`.
+    pub fn build_connect_result() -> Bytes {
+        let mut buf = BytesMut::new();
+        write_string(&mut buf, "_result");
+        write_number(&mut buf, 1.0);
+
+        write_object_start(&mut buf);
+        write_object_key(&mut buf, "fmsVer");
+        write_string(&mut buf, "FMS/3,0,1,123");
+        write_object_key(&mut buf, "capabilities");
+        write_number(&mut buf, 31.0);
+        write_object_end(&mut buf);
+
+        write_object_start(&mut buf);
+        write_object_key(&mut buf, "level");
+        write_string(&mut buf, "status");
+        write_object_key(&mut buf, "code");
+        write_string(&mut buf, "NetConnection.Connect.Success");
+        write_object_key(&mut buf, "description");
+        write_string(&mut buf, "Connection succeeded.");
+        write_object_key(&mut buf, "objectEncoding");
+        write_number(&mut buf, 0.0);
+        write_object_end(&mut buf);
+
+        buf.freeze()
+    }
+
+    /// Build the `_result` payload for `createStream`.
+    pub fn build_create_stream_result(transaction_id: f64, stream_id: f64) -> Bytes {
+        let mut buf = BytesMut::new();
+        write_string(&mut buf, "_result");
+        write_number(&mut buf, transaction_id);
+        write_null(&mut buf);
+        write_number(&mut buf, stream_id);
+        buf.freeze()
+    }
+
+    /// Build an `onStatus` payload announcing a published stream.
+    pub fn build_publish_start() -> Bytes {
+        let mut buf = BytesMut::new();
+        write_string(&mut buf, "onStatus");
+        write_number(&mut buf, 0.0);
+        write_null(&mut buf);
+        write_object_start(&mut buf);
+        write_object_key(&mut buf, "level");
+        write_string(&mut buf, "status");
+        write_object_key(&mut buf, "code");
+        write_string(&mut buf, "NetStream.Publish.Start");
+        write_object_key(&mut buf, "description");
+        write_string(&mut buf, "Start publishing");
+        write_object_end(&mut buf);
+        buf.freeze()
+    }
+
+    /// Build a minimal `_result` with a null command object.
+    pub fn build_simple_result(transaction_id: f64) -> Bytes {
+        let mut buf = BytesMut::new();
+        write_string(&mut buf, "_result");
+        write_number(&mut buf, transaction_id);
+        write_null(&mut buf);
+        write_null(&mut buf);
+        buf.freeze()
     }
 }
 
@@ -460,5 +958,72 @@ mod tests {
         let decoded = read_chunk(&mut reader).await.unwrap();
         assert_eq!(decoded.header, message.header);
         assert_eq!(decoded.payload, message.payload);
+    }
+
+    #[tokio::test]
+    async fn reassembles_a_message_split_across_chunks() {
+        let payload = Bytes::from(vec![0xAB; 300]);
+        let message = RtmpMessage {
+            header: ChunkHeader {
+                chunk_stream_id: csid::VIDEO,
+                timestamp: 90_000,
+                message_length: payload.len() as u32,
+                message_type: MessageType::Video,
+                message_stream_id: 1,
+            },
+            payload,
+        };
+        let expected_header = message.header;
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        let write_task = tokio::spawn(async move {
+            ChunkWriter::new().write_message(&mut writer, &message).await.unwrap();
+        });
+
+        let mut chunk_reader = ChunkReader::new();
+        let decoded = chunk_reader.read_message(&mut reader).await.unwrap();
+        write_task.await.unwrap();
+        assert_eq!(decoded.header, expected_header);
+        assert_eq!(decoded.payload.len(), 300);
+    }
+
+    #[tokio::test]
+    async fn applies_peer_chunk_size_and_decodes_compressed_headers() {
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+
+        tokio::spawn(async move {
+            let chunk_size_msg = RtmpMessage {
+                header: ChunkHeader {
+                    chunk_stream_id: csid::PROTOCOL_CONTROL,
+                    timestamp: 0,
+                    message_length: 4,
+                    message_type: MessageType::SetChunkSize,
+                    message_stream_id: 0,
+                },
+                payload: Bytes::from(4096u32.to_be_bytes().to_vec()),
+            };
+            ChunkWriter::new().write_message(&mut writer, &chunk_size_msg).await.unwrap();
+
+            // After the chunk size changes, a 200-byte message fits in one chunk.
+            let message = RtmpMessage {
+                header: ChunkHeader {
+                    chunk_stream_id: csid::AUDIO,
+                    timestamp: 10,
+                    message_length: 200,
+                    message_type: MessageType::Audio,
+                    message_stream_id: 1,
+                },
+                payload: Bytes::from(vec![7u8; 200]),
+            };
+            ChunkWriter::with_chunk_size(4096).write_message(&mut writer, &message).await.unwrap();
+        });
+
+        let mut chunk_reader = ChunkReader::new();
+        let control = chunk_reader.read_message(&mut reader).await.unwrap();
+        assert_eq!(control.header.message_type, MessageType::SetChunkSize);
+        assert_eq!(chunk_reader.chunk_size(), 4096);
+
+        let audio = chunk_reader.read_message(&mut reader).await.unwrap();
+        assert_eq!(audio.header.message_type, MessageType::Audio);
+        assert_eq!(audio.payload.len(), 200);
     }
 }

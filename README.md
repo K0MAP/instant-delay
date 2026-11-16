@@ -1,8 +1,10 @@
 # InstantDelay
 
-**Change stream delay while live—without restarting your streaming setup.** InstantDelay is an experimental desktop application built with Tauri 2, React, TypeScript, and Rust. It is intended to sit between an OBS RTMP output and one or more streaming destinations, buffering media so the delay can be controlled from the app.
+[Project repository](https://github.com/K0MAP/instant-delay) · [Implementation plan](IMPLEMENTATION_PLAN.md)
 
-> **Status: experimental / work in progress.** The project builds and has unit tests, but the RTMP ingest/relay path has not been validated end-to-end against OBS and production streaming services. Do not rely on it as the only path for a live broadcast. Test with a private stream and keep a working fallback configuration.
+**Change stream delay while live—without restarting your streaming setup.** InstantDelay is an experimental desktop application that receives a local RTMP feed, buffers media, and relays it to configured destinations so delay can be controlled from the app.
+
+> **Status: experimental / work in progress.** The project builds and has unit tests, but the complete ingest-to-destination workflow has not been validated end-to-end. Do not rely on it as the only path for a live broadcast. Test with a private destination and keep a working fallback configuration.
 
 [Українська версія нижче](#українською)
 
@@ -10,7 +12,7 @@
 
 - Local RTMP ingest and configurable delay buffer.
 - Delay modes and controls for changing, increasing, decreasing, or skipping the delay.
-- RTMP output profiles for Twitch, YouTube, Kick, TikTok, Restream, and custom RTMP endpoints.
+- Configurable RTMP output profiles for supported destinations.
 - Local browser-source overlay with status updates over WebSocket.
 - Global hotkey settings and a Stream Deck integration scaffold.
 - Local settings for buffer size, overlay appearance, and server ports.
@@ -27,7 +29,7 @@ The desktop build is currently developed and verified on Windows. Other operatin
 - Visual Studio Build Tools with the C++ build tools and Windows SDK.
 - Git.
 
-Tauri's official setup guide has the up-to-date platform prerequisites: <https://tauri.app/start/prerequisites/>.
+On Windows, install the Windows SDK, C++ build tools, Rust MSVC toolchain, Node.js/npm, and the WebView2 Runtime before building.
 
 ## Build and run
 
@@ -63,18 +65,19 @@ The installer/bundle is written under `src-tauri/target/release/bundle/`. Do not
 | Service | Default address | Purpose |
 | --- | --- | --- |
 | RTMP ingest | `127.0.0.1:1935` | Local stream input |
-| Overlay page and WebSocket | `127.0.0.1:8080` | OBS browser-source overlay |
+| Overlay page and WebSocket | `127.0.0.1:8080` | Browser-source status overlay |
 | Web UI API | `127.0.0.1:8081` | Local application API |
 | Stream Deck | `127.0.0.1:3000` | Optional integration setting |
 
 The HTTP and overlay servers bind to loopback by default. Keep them local: do not port-forward them, expose them on a public interface, or put them behind a tunnel. The web API is not intended to be a hardened remote-control service; configure it only on a trusted machine.
 
+
 ## Project layout
 
 ```text
-src/                 React/TypeScript user interface
-src-tauri/src/       Tauri application and Rust services
-  ipc/               Tauri commands, shared settings, and events
+src/                 Desktop user interface
+src-tauri/src/       Native application and backend services
+  ipc/               Desktop commands, shared settings, and events
   rtmp/              RTMP protocol, server, relay, sessions, and buffer
   web/               Local API and overlay HTTP/WebSocket servers
   overlay/           Overlay HTML generation
@@ -92,7 +95,7 @@ src-tauri/src/       Tauri application and Rust services
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and pull-request checklist. Please include a clear reproduction for bugs and note which OS, Rust, Node.js, and OBS versions were tested.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and pull-request checklist. Please include a clear reproduction for bugs and note which OS, runtime, and encoder versions were tested.
 
 ## License
 
@@ -102,23 +105,23 @@ This project is distributed under the MIT License; see [LICENSE](LICENSE).
 
 ## Українською
 
-**Змінюйте затримку стріму під час трансляції без перезапуску OBS.** InstantDelay — експериментальна desktop-програма на Tauri 2, React, TypeScript і Rust. Вона призначена працювати між RTMP-виходом OBS і платформами трансляції, буферизуючи медіадані для керування затримкою.
+**Змінюйте затримку стріму під час трансляції без перезапуску налаштувань.** InstantDelay — експериментальна desktop-програма, що приймає локальний RTMP-потік, буферизує медіадані та передає їх налаштованим адресатам із керованою затримкою.
 
-> **Статус: експериментальний проєкт у розробці.** Збірка та модульні тести працюють, але повний сценарій RTMP ingest/relay ще не перевірено від початку до кінця з OBS і реальними сервісами. Не використовуйте програму як єдиний шлях трансляції без тестування; залиште робочий резервний варіант.
+> **Статус: експериментальний проєкт у розробці.** Збірка та модульні тести працюють, але повний сценарій передавання потоку ще не перевірено від початку до кінця. Не використовуйте програму як єдиний шлях трансляції без тестування; залиште робочий резервний варіант.
 
 ### Можливості, що розробляються
 
 - Локальний RTMP ingest і буфер із налаштовуваною затримкою.
 - Режими затримки та керування затримкою з інтерфейсу.
-- Профілі RTMP для Twitch, YouTube, Kick, TikTok, Restream і власних серверів.
-- Локальний overlay для Browser Source в OBS із WebSocket-оновленнями.
+- Налаштовувані профілі RTMP для підтримуваних адресатів.
+- Локальний status overlay для browser source із WebSocket-оновленнями.
 - Налаштування глобальних гарячих клавіш і заготовка інтеграції Stream Deck.
 
 Функціональність продовжує розроблятися. Успішна збірка чи модульний тест не гарантують повну роботу трансляції з кожним енкодером або платформою. Перевірка підключення наразі перевіряє конфігурацію, а не повний сценарій передавання стріму.
 
 ### Запуск у Windows
 
-Потрібні Node.js/npm, стабільний Rust із MSVC, Visual Studio C++ Build Tools і Windows SDK, а також WebView2 Runtime. Деталі — в офіційному [посібнику Tauri](https://tauri.app/start/prerequisites/).
+Потрібні Node.js/npm, стабільний Rust із MSVC, інструменти C++ і Windows SDK, а також WebView2 Runtime.
 
 ```powershell
 npm ci

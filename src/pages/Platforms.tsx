@@ -22,6 +22,7 @@ import {
 import { usePlatforms, useNotifications } from '../hooks/useTauri';
 import { PlatformOutput, Platform } from '../types';
 import clsx from 'clsx';
+import { useTranslation } from '../i18n';
 
 const PLATFORM_CONFIGS: Record<string, { icon: React.ComponentType<{className?: string}>; color: string; name: string }> = {
   twitch: { icon: Wifi, color: 'bg-purple-600', name: 'Twitch' },
@@ -41,6 +42,7 @@ interface PlatformFormData {
 }
 
 export function Platforms() {
+  const { t } = useTranslation();
   const { platforms, addPlatformOutput, removePlatformOutput, updatePlatformOutput, testConnection } = usePlatforms();
   const { notify } = useNotifications();
   const [showModal, setShowModal] = useState(false);
@@ -157,15 +159,15 @@ const [showModalKey, setShowModalKey] = useState(false);
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-surface-50">Platforms</h2>
-          <p className="text-surface-400 text-sm mt-1">Manage your streaming destinations</p>
+          <h2 className="text-2xl font-bold text-surface-50">{t('Platforms')}</h2>
+          <p className="text-surface-400 text-sm mt-1">{t('Manage streaming destinations')}</p>
         </div>
         <button
           onClick={() => { resetForm(); setShowModal(true); }}
           className="btn-primary flex items-center gap-2"
         >
           <Plus className="w-4 h-4" />
-          Add Platform
+          {t('Add Platform')}
         </button>
       </div>
 
@@ -173,16 +175,16 @@ const [showModalKey, setShowModalKey] = useState(false);
       {platforms.length === 0 ? (
         <div className="card p-12 empty-state">
           <Server className="empty-state-icon w-16 h-16" />
-          <h3 className="empty-state-title">No platforms configured</h3>
+          <h3 className="empty-state-title">{t('No platforms configured')}</h3>
           <p className="empty-state-description">
-            Add your streaming destinations to start relaying your delayed stream to multiple platforms simultaneously.
+            {t('Add your streaming destinations to start relaying your delayed stream to multiple platforms simultaneously.')}
           </p>
           <button
             onClick={() => { resetForm(); setShowModal(true); }}
             className="btn-primary mt-4 flex items-center gap-2"
           >
             <Plus className="w-4 h-4" />
-            Add Your First Platform
+            {t('Add Your First Platform')}
           </button>
         </div>
       ) : (
@@ -221,7 +223,7 @@ const [showModalKey, setShowModalKey] = useState(false);
                       isConnected && 'text-green-400',
                       !isConnected && 'text-surface-500'
                     )}>
-                      {isConnected ? 'Live' : 'Offline'}
+                      {isConnected ? t('Live') : t('Offline')}
                     </span>
                   </div>
 
@@ -290,7 +292,7 @@ const [showModalKey, setShowModalKey] = useState(false);
                 {/* Details expandable */}
                 <details className="mt-4 w-full">
                   <summary className="flex items-center justify-between cursor-pointer text-sm text-surface-500 hover:text-surface-300">
-                    <span>Connection Details</span>
+                    <span>{t('Connection Details')}</span>
                     <Eye className="w-4 h-4 transition-transform duration-200" />
                   </summary>
                   <div className="mt-3 p-3 bg-surface-900/50 rounded-lg border border-surface-800 space-y-2 text-sm">
@@ -309,7 +311,7 @@ const [showModalKey, setShowModalKey] = useState(false);
                     </div>
                     <div className="flex items-center justify-between gap-4 flex-wrap">
                       <div className="flex items-center gap-2 min-w-0 flex-1">
-                        <span className="text-surface-500 min-w-[80px]">Stream Key:</span>
+                        <span className="text-surface-500 min-w-[80px]">{t('Stream Key')}:</span>
                         <code className="text-surface-300 font-mono truncate flex-1">
                           {showKeys[platform.id] ? platform.stream_key : '••••••••••••••••'}
                         </code>
@@ -336,7 +338,7 @@ const [showModalKey, setShowModalKey] = useState(false);
                         isConnected && 'bg-green-500/20 text-green-400',
                         !isConnected && 'bg-surface-700 text-surface-500'
                       )}>
-                        {isConnected ? 'Connected' : 'Disconnected'}
+                        {isConnected ? t('Connected') : t('Disconnected')}
                       </span>
                     </div>
                   </div>
@@ -352,7 +354,7 @@ const [showModalKey, setShowModalKey] = useState(false);
         <div className="modal-overlay" onClick={() => { setShowModal(false); resetForm(); }}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">{editingPlatform ? 'Edit Platform' : 'Add Platform'}</h3>
+              <h3 className="modal-title">{editingPlatform ? t('Edit Platform') : t('Add Platform')}</h3>
               <button
                 onClick={() => { setShowModal(false); resetForm(); }}
                 className="p-1 text-surface-400 hover:text-surface-200"

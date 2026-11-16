@@ -33,6 +33,8 @@ interface AppState {
   // UI state
   activeTab: string;
   sidebarOpen: boolean;
+  language: 'en' | 'uk';
+  setLanguage: (language: 'en' | 'uk') => void;
   notifications: Notification[];
 
   // Overlay
@@ -77,6 +79,7 @@ export const useStore = create<AppState>()(
         systemInfo: null,
         activeTab: 'dashboard',
         sidebarOpen: true,
+        language: 'en',
         notifications: [],
         overlayData: null,
 
@@ -125,6 +128,8 @@ export const useStore = create<AppState>()(
 
         setActiveTab: (tab) => set({ activeTab: tab }),
 
+        setLanguage: (language) => set({ language }),
+
         toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
 
         setSidebarOpen: (open) => set({ sidebarOpen: open }),
@@ -159,6 +164,7 @@ export const useStore = create<AppState>()(
         partialize: (state) => ({
           activeTab: state.activeTab,
           sidebarOpen: state.sidebarOpen,
+          language: state.language,
           // Don't persist runtime state
         }),
       }
